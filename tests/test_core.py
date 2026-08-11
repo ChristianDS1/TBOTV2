@@ -400,4 +400,30 @@ def test_daily_report_sections(cfg, tmp_db, tmp_path):
     assert "Oportunidades" in text
     assert "Cambios implementados" in text
     assert "Progreso del aprendizaje" in text
+    assert "Decisión:" in text
+    assert "Repeticiones" in text
     assert tmp_db.latest_daily_report() is not None
+
+
+def test_report_shows_accept_reject_reasons(cfg, tmp_db, tmp_path):
+    from trading_system.reports import write_daily_report
+
+    cfg.learning.pattern_min_occurrences = 20
+    le = LearningEngine(cfg.learning, tmp_db)
+    for _ in range(20):
+        pos = _closed_pos(pnl=-0.3, regime="high_vol")
+        pos.id = tmp_db.insert_trade(pos)
+        le.on_trade_closed(pos)
+    # one observing win candidate
+    pos_w = _closed_pos(pnl=0.4, regime="ranging")
+    pos_w.id = tmp_db.insert_trade(pos_w)
+    le.on_trade_closed(pos_w)
+
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    path = write_daily_report(db=tmp_db, learning=le, out_dir=tmp_path, day=day)
+    text = path.read_text(encoding="utf-8")
+    assert "ACEPTADO" in text
+    assert "NO ACEPTADO" in text
+    assert "Repeticiones al confirmar: **20**" in text
+    assert "regime=high_vol" in text
+    assert "solo esta condición contextual" in text or "solo esa key" in text or "NO invalida los 5" in text

@@ -14,13 +14,23 @@ discovery → pattern → optimization → exploitation (suggested by trade coun
 
 - Effect: **confidence boost only** (`win_confidence_boost`, default +8).
 - Does **not** modify entry rules / strategy / the pattern itself.
+- Scope: **only the matching contextual key** (e.g. `regime=ranging`), not the full 5-indicator entry checklist.
 
 ### Confirmed loss pattern
 
 - Effect: confidence penalty and optional **soft-reject** (`loss_soft_reject`).
 - Base strategy unchanged.
+- Scope: **only that key** — does **not** treat BB+RSI+MACD+rejection as all wrong.
 
-Applied effects are logged in `applied_changes` for the daily report.
+### Daily report pattern audit
+
+For each pattern (accepted or still observing) the report includes:
+
+- Decision: ACEPTADO / NO ACEPTADO
+- Repetition count at confirmation (or current count / threshold)
+- Effect applied (or none)
+- Explicit reason text
+
 
 ## Daily report (UTC rollover)
 

@@ -2,14 +2,63 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from trading_system.config import ROOT
 from trading_system.database import Database
 from trading_system.learning import LearningEngine
+
+
+def _pattern_decision_block(
+    patterns: list[dict[str, Any]],
+    *,
+    threshold: int,
+    direction: str,
+    confirmed: bool,
+    limit: int = 20,
+) -> list[str]:
+    lines: list[str] = []
+    ordered = sorted(patterns, key=lambda x: -int(x.get("count") or 0))[:limit]
+    if not ordered:
+        lines.append("- Ninguno.")
+        return lines
+
+    for p in ordered:
+        key = p["pattern_key"]
+        count = int(p.get("count") or 0)
+        conf_count = p.get("confirmed_count")
+        conf_at = p.get("confirmed_at") or "—"
+        effect = p.get("effect_action") or "—"
+        reason = p.get("decision_reason")
+
+        if confirmed:
+            reps = conf_count if conf_count is not None else count
+            if not reason:
+                reason = (
+                    f"ACEPTADO: '{key}' alcanzó {reps} repeticiones "
+                    f"(umbral ≥{threshold})."
+                )
+            lines.append(f"- **`{key}`**")
+            lines.append(f"  - Decisión: **ACEPTADO / CONFIRMADO** ({direction})")
+            lines.append(f"  - Repeticiones al confirmar: **{reps}** (umbral ≥{threshold})")
+            lines.append(f"  - Count actual: **{count}** | Confirmado en: {conf_at}")
+            lines.append(f"  - Efecto: `{effect}`")
+            lines.append(f"  - Razón: {reason}")
+        else:
+            remaining = max(0, threshold - count)
+            reason = (
+                f"RECHAZADO como patrón confirmado (aún en observación): '{key}' "
+                f"solo tiene {count}/{threshold} repeticiones; faltan {remaining} "
+                f"para aceptarlo. No se aplica boost/penalty/soft-reject todavía."
+            )
+            lines.append(f"- **`{key}`**")
+            lines.append(f"  - Decisión: **NO ACEPTADO / OBSERVANDO** ({direction})")
+            lines.append(f"  - Repeticiones: **{count}/{threshold}** (faltan {remaining})")
+            lines.append(f"  - Efecto: ninguno todavía")
+            lines.append(f"  - Razón: {reason}")
+    return lines
 
 
 def write_daily_report(
@@ -68,52 +117,46 @@ def write_daily_report(
         f"- Exploration ratio: **{float(progress.get('exploration_ratio') or 0):.1%}**",
         f"- Lifetime closed trades: **{len(all_closed)}**",
         "",
+        "> Nota: los patrones de aprendizaje son keys contextuales "
+        "(`regime`, `symbol`, `exit_reason`, etc.), **no** el paquete completo "
+        "de los 5 indicadores de entrada. Una loss confirmada penaliza/rechaza "
+        "solo esa key, no marca BB+RSI+MACD+rejection como inválidos en bloque.",
+        "",
         "## 2. Errores identificados (loss patterns)",
         f"- Confirmation threshold: **≥{threshold}** occurrences",
         "",
-        "### Confirmados (≥ threshold)",
+        "### Confirmados (ACEPTADOS)",
     ]
-    if confirmed_losses:
-        for p in confirmed_losses:
-            lines.append(
-                f"- `{p['pattern_key']}` count={p['count']} status={p['status']}"
-            )
-    else:
-        lines.append("- Ningún loss pattern confirmado aún.")
+    lines += _pattern_decision_block(
+        confirmed_losses, threshold=threshold, direction="loss", confirmed=True
+    )
 
-    lines += ["", "### Candidatos en observación (< threshold)"]
-    if observing_losses:
-        for p in sorted(observing_losses, key=lambda x: -x["count"])[:15]:
-            lines.append(
-                f"- `{p['pattern_key']}` count={p['count']}/{threshold}"
-            )
-    else:
-        lines.append("- Ninguno.")
+    lines += ["", "### Candidatos NO aceptados aún (observación)"]
+    lines += _pattern_decision_block(
+        observing_losses, threshold=threshold, direction="loss", confirmed=False
+    )
 
     lines += [
         "",
         "## 3. Oportunidades (win patterns)",
         "",
-        "### Confirmados (≥ threshold) — efecto: solo confidence boost",
+        "### Confirmados (ACEPTADOS) — efecto: solo confidence boost",
     ]
-    if confirmed_wins:
-        for p in confirmed_wins:
-            lines.append(
-                f"- `{p['pattern_key']}` count={p['count']} (confidence boost only; strategy unchanged)"
-            )
-    else:
-        lines.append("- Ningún win pattern confirmado aún.")
+    lines += _pattern_decision_block(
+        confirmed_wins, threshold=threshold, direction="win", confirmed=True
+    )
 
-    lines += ["", "### Candidatos en observación (< threshold)"]
-    if observing_wins:
-        for p in sorted(observing_wins, key=lambda x: -x["count"])[:15]:
-            lines.append(
-                f"- `{p['pattern_key']}` count={p['count']}/{threshold}"
-            )
-    else:
-        lines.append("- Ninguno.")
+    lines += ["", "### Candidatos NO aceptados aún (observación)"]
+    lines += _pattern_decision_block(
+        observing_wins, threshold=threshold, direction="win", confirmed=False
+    )
 
-    lines += ["", "## 4. Cambios implementados hoy"]
+    lines += [
+        "",
+        "## 4. Cambios implementados hoy",
+        "",
+        "Cada cambio lista cuántas veces se repitió el patrón antes de aplicarlo.",
+    ]
     if changes:
         for c in changes:
             lines.append(
@@ -141,9 +184,12 @@ def write_daily_report(
     else:
         lines.append("- Sin rankings aún.")
 
-    day_obs = [i for i in day_insights if i["category"] in (
-        "confirmed_pattern", "capital_reset", "ml_train", "retrain"
-    )]
+    day_obs = [
+        i
+        for i in day_insights
+        if i["category"]
+        in ("confirmed_pattern", "capital_reset", "ml_train", "retrain")
+    ]
     lines += ["", "### Insights clave del día"]
     if day_obs:
         for i in day_obs[:25]:
@@ -151,7 +197,7 @@ def write_daily_report(
     else:
         lines.append("- Sin insights clave.")
 
-    lines += ["", "### Rejected signals (recent sample)"]
+    lines += ["", "### Señales de trade rechazadas (sample)"]
     for r in rejected[:10]:
         lines.append(
             f"- {r['symbol']} reason={r['reason']} conf={r.get('confidence')}"
@@ -192,14 +238,12 @@ def maybe_rollover_daily_report(
     effective_last = last_report_day or stored
 
     if effective_last is None:
-        # First run: mark today, don't invent a prior report
         db.set_state("last_daily_report_day", today)
         return today, None
 
     if effective_last == today:
         return None, None
 
-    # Generate report for the day that just ended
     path = write_daily_report(db, learning=learning, day=effective_last)
     db.set_state("last_daily_report_day", today)
     db.insert_insight(

@@ -95,6 +95,10 @@ CREATE TABLE IF NOT EXISTS pattern_evidence (
     count INTEGER NOT NULL DEFAULT 0,
     last_seen TEXT,
     status TEXT NOT NULL DEFAULT 'observing',
+    confirmed_at TEXT,
+    confirmed_count INTEGER,
+    decision_reason TEXT,
+    effect_action TEXT,
     PRIMARY KEY (pattern_key, direction)
 );
 
@@ -142,6 +146,25 @@ class Database:
     def _init(self) -> None:
         with self.connection() as conn:
             conn.executescript(SCHEMA)
+        self._migrate_pattern_columns()
+
+    def _migrate_pattern_columns(self) -> None:
+        needed = {
+            "confirmed_at": "TEXT",
+            "confirmed_count": "INTEGER",
+            "decision_reason": "TEXT",
+            "effect_action": "TEXT",
+        }
+        with self.connection() as conn:
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(pattern_evidence)").fetchall()
+            }
+            for name, typ in needed.items():
+                if name not in cols:
+                    conn.execute(
+                        f"ALTER TABLE pattern_evidence ADD COLUMN {name} {typ}"
+                    )
 
     def insert_trade(self, pos: Position) -> int:
         with self.connection() as conn:
@@ -353,14 +376,34 @@ class Database:
                 "just_confirmed": just_confirmed,
             }
 
-    def confirm_pattern(self, pattern_key: str, direction: str) -> None:
+    def confirm_pattern(
+        self,
+        pattern_key: str,
+        direction: str,
+        *,
+        confirmed_count: int,
+        decision_reason: str,
+        effect_action: str,
+    ) -> None:
         with self.connection() as conn:
             conn.execute(
                 """
-                UPDATE pattern_evidence SET status='confirmed'
+                UPDATE pattern_evidence
+                SET status='confirmed',
+                    confirmed_at=?,
+                    confirmed_count=?,
+                    decision_reason=?,
+                    effect_action=?
                 WHERE pattern_key=? AND direction=?
                 """,
-                (pattern_key, direction),
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    confirmed_count,
+                    decision_reason,
+                    effect_action,
+                    pattern_key,
+                    direction,
+                ),
             )
 
     def get_patterns(
@@ -380,8 +423,20 @@ class Database:
         return [dict(r) for r in rows]
 
     def insert_applied_change(
-        self, pattern_key: str, direction: str, action: str, detail: str
+        self,
+        pattern_key: str,
+        direction: str,
+        action: str,
+        detail: str,
+        *,
+        occurrences: int | None = None,
+        threshold: int | None = None,
     ) -> None:
+        meta = detail
+        if occurrences is not None and threshold is not None:
+            meta = (
+                f"occurrences={occurrences} (threshold≥{threshold}). {detail}"
+            )
         with self.connection() as conn:
             conn.execute(
                 """
@@ -393,7 +448,7 @@ class Database:
                     pattern_key,
                     direction,
                     action,
-                    detail,
+                    meta,
                 ),
             )
 

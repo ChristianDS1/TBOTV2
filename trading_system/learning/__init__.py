@@ -146,19 +146,40 @@ class LearningEngine:
                 continue
 
             if status != "confirmed":
-                self.db.confirm_pattern(key, direction)
-                action_info = self._apply_confirmed_effect(key, direction)
-                newly_confirmed.append({**ev, "status": "confirmed", **action_info})
+                action_info = self._apply_confirmed_effect(
+                    key, direction, occurrences=count, threshold=threshold
+                )
+                decision_reason = (
+                    f"ACEPTADO como patrón {direction}: la key '{key}' se repitió "
+                    f"{count} veces (≥ umbral {threshold}). "
+                    f"Scope: solo esta condición contextual — NO invalida los 5 "
+                    f"indicadores de entrada (BB/RSI/MACD/rejection) en bloque. "
+                    f"Efecto aplicado: {action_info['action']}."
+                )
+                self.db.confirm_pattern(
+                    key,
+                    direction,
+                    confirmed_count=count,
+                    decision_reason=decision_reason,
+                    effect_action=action_info["action"],
+                )
+                newly_confirmed.append(
+                    {
+                        **ev,
+                        "status": "confirmed",
+                        "confirmed_count": count,
+                        "decision_reason": decision_reason,
+                        **action_info,
+                    }
+                )
                 self.db.insert_insight(
                     "confirmed_pattern",
-                    (
-                        f"CONFIRMED {direction} pattern '{key}' after {count} occurrences "
-                        f"(threshold={threshold}). Effect: {action_info['action']}"
-                    ),
+                    decision_reason,
                     {
                         "pattern_key": key,
                         "direction": direction,
                         "count": count,
+                        "threshold": threshold,
                         "action": action_info["action"],
                     },
                 )
@@ -172,34 +193,49 @@ class LearningEngine:
             )
         return newly_confirmed
 
-    def _apply_confirmed_effect(self, pattern_key: str, direction: str) -> dict[str, str]:
+    def _apply_confirmed_effect(
+        self,
+        pattern_key: str,
+        direction: str,
+        *,
+        occurrences: int,
+        threshold: int,
+    ) -> dict[str, str]:
         """
         Win: confidence boost ONLY — do not alter strategy/pattern rules.
         Loss: confidence penalty and optional soft-reject flag.
+        Affects only the matching contextual key, not all 5 entry indicators.
         """
         if direction == "win":
             action = "confidence_boost"
             detail = (
-                f"Win pattern confirmed. Boost confidence by "
-                f"+{self.cfg.win_confidence_boost} when signal matches '{pattern_key}'. "
-                f"Strategy entry rules unchanged."
+                f"Win pattern on key '{pattern_key}' only. "
+                f"Boost confidence by +{self.cfg.win_confidence_boost} when a new "
+                f"signal matches this key. Entry checklist BB/RSI/MACD/rejection unchanged."
             )
         else:
             if self.cfg.loss_soft_reject:
                 action = "soft_reject"
                 detail = (
-                    f"Loss pattern confirmed. Soft-reject (and "
-                    f"-{self.cfg.loss_confidence_penalty} conf) when signal matches "
-                    f"'{pattern_key}'. Base strategy unchanged."
+                    f"Loss pattern on key '{pattern_key}' only. "
+                    f"Soft-reject (and -{self.cfg.loss_confidence_penalty} conf) when a "
+                    f"new signal matches this key. Does NOT mark all 5 indicators as bad."
                 )
             else:
                 action = "confidence_penalty"
                 detail = (
-                    f"Loss pattern confirmed. Penalize confidence by "
-                    f"-{self.cfg.loss_confidence_penalty} when signal matches "
-                    f"'{pattern_key}'. Base strategy unchanged."
+                    f"Loss pattern on key '{pattern_key}' only. "
+                    f"Penalize confidence by -{self.cfg.loss_confidence_penalty} when a "
+                    f"new signal matches this key. Entry checklist unchanged."
                 )
-        self.db.insert_applied_change(pattern_key, direction, action, detail)
+        self.db.insert_applied_change(
+            pattern_key,
+            direction,
+            action,
+            detail,
+            occurrences=occurrences,
+            threshold=threshold,
+        )
         return {"action": action, "detail": detail}
 
     def apply_confidence_effects(self, signal: Signal) -> tuple[Signal, str | None]:
