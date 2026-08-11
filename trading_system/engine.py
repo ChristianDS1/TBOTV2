@@ -12,6 +12,7 @@ from trading_system.data.crypto import CryptoAdapter, SimulatedCryptoAdapter
 from trading_system.data.forex import ForexAdapter
 from trading_system.database import Database
 from trading_system.execution import PaperExecutor
+from trading_system.execution.edge import assess_entry_edge
 from trading_system.learning import LearningEngine
 from trading_system.models import WinProbabilityModel
 from trading_system.portfolio import Portfolio
@@ -191,6 +192,42 @@ class TradingEngine:
         if signal is None:
             return
 
+        price = float(df["close"].iloc[-1])
+
+        # Soft fee-aware edge: hard-reject only suicide setups; thin edge still enters
+        edge = assess_entry_edge(
+            price=price,
+            take_profit=signal.take_profit,
+            fee_bps=self.cfg.execution.fee_bps,
+            slippage_bps=self.cfg.execution.slippage_bps,
+            hard_multiple=self.cfg.execution.hard_min_edge_multiple,
+            soft_multiple=self.cfg.execution.soft_min_edge_multiple,
+        )
+        signal.features["edge_bps"] = edge.edge_bps
+        signal.features["round_trip_cost_bps"] = edge.round_trip_cost_bps
+        signal.features["edge_ratio"] = edge.ratio
+        if edge.hard_reject:
+            self.db.insert_rejected(
+                RejectedSignal(
+                    symbol=symbol,
+                    venue=venue,
+                    side=signal.side,
+                    strategy=signal.strategy,
+                    confidence=signal.confidence,
+                    reason=edge.reason,
+                    features=signal.features,
+                    regime=signal.regime,
+                    timestamp=datetime.now(timezone.utc),
+                )
+            )
+            return
+        if edge.soft_penalty:
+            signal.confidence = max(
+                0.0,
+                signal.confidence - self.cfg.execution.soft_edge_confidence_penalty,
+            )
+            signal.features["thin_edge"] = True
+
         p_win = self.model.predict_proba(signal.features, signal.confidence)
         signal.features["p_win"] = p_win
         signal.confidence = 0.7 * signal.confidence + 0.3 * (p_win * 100)
@@ -261,7 +298,6 @@ class TradingEngine:
                 )
                 return
 
-        price = float(df["close"].iloc[-1])
         self.executor.open_trade(signal, decision.size, price)
 
     def _build_snapshot(

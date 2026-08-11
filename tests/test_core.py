@@ -511,3 +511,66 @@ def test_rebuild_reclassifies_legacy_take_profit(cfg, tmp_db):
     assert any(p["pattern_key"] == "exit_reason=take_profit" for p in wins)
     assert not any(p["pattern_key"] == "exit_reason=take_profit" for p in losses)
     assert len(costs) >= 1
+
+
+def test_entry_edge_hard_and_soft():
+    from trading_system.execution.edge import assess_entry_edge
+
+    # 5 bps to TP, ~12 bps round trip → hard reject
+    hard = assess_entry_edge(
+        price=100.0,
+        take_profit=100.05,
+        fee_bps=4.0,
+        slippage_bps=2.0,
+        hard_multiple=1.0,
+        soft_multiple=1.5,
+    )
+    assert hard.hard_reject is True
+
+    # 15 bps to TP vs 12 cost → soft zone (~1.25x)
+    soft = assess_entry_edge(
+        price=100.0,
+        take_profit=100.15,
+        fee_bps=4.0,
+        slippage_bps=2.0,
+    )
+    assert soft.hard_reject is False
+    assert soft.soft_penalty is True
+    # 30 bps → ok
+    ok = assess_entry_edge(
+        price=100.0,
+        take_profit=100.30,
+        fee_bps=4.0,
+        slippage_bps=2.0,
+    )
+    assert ok.hard_reject is False
+    assert ok.soft_penalty is False
+
+
+def test_tp_deferred_when_net_negative(cfg, tmp_db):
+    from trading_system.execution import PaperExecutor
+    from trading_system.portfolio import Portfolio
+
+    port = Portfolio(tmp_db, 100)
+    ex = PaperExecutor(cfg, tmp_db, port)
+    cfg.execution.tp_require_non_negative_net = True
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        take_profit=65001,
+        timestamp=datetime.now(timezone.utc),
+        regime=MarketRegime.RANGING,
+    )
+    pos = ex.open_trade(sig, 2.5, 65000)
+    # Mark barely above TP — fees make net negative
+    closed = ex.manage_open(
+        {"BTC/USDT": 65001.0},
+        forex_session_open=True,
+        close_fx_at_session_end=False,
+    )
+    assert closed == []
+    assert len(port.open_positions()) == 1

@@ -12,6 +12,14 @@
 
 If paper cash/equity is exhausted and there are **no open positions**, capital is topped up to `capital_policy.refill_to` (default €100). Trading continues. Each refill is logged (`capital_reset`) and counted for the daily report.
 
+## Fee-aware edge (forward-looking only)
+
+Does **not** wipe learned patterns / history.
+
+- Hard-reject only if distance to TP &lt; `1.0 ×` round-trip cost (`insufficient_edge_vs_fees`)
+- Soft zone `1.0–1.5 ×`: still enters, −10 confidence (`thin_edge`)
+- Take-profit close deferred if estimated **net** would be &lt; 0 (hold until better or `time_stop`)
+
 ## Kill switch (technical)
 
 Trips on:

@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 
 from trading_system.config import AppConfig
 from trading_system.database import Database
+from trading_system.execution.edge import can_take_profit_net_non_negative
 from trading_system.portfolio import Portfolio
 from trading_system.types import Position, Signal, TradeStatus
 
@@ -122,12 +123,28 @@ class PaperExecutor:
                 continue
 
             if pos.take_profit is not None:
-                if pos.side.value == "call" and px >= pos.take_profit:
-                    closed.append(self.close_trade(pos, px, "take_profit"))
-                    continue
-                if pos.side.value == "put" and px <= pos.take_profit:
-                    closed.append(self.close_trade(pos, px, "take_profit"))
-                    continue
+                hit_tp = (
+                    (pos.side.value == "call" and px >= pos.take_profit)
+                    or (pos.side.value == "put" and px <= pos.take_profit)
+                )
+                if hit_tp:
+                    require_net = self.cfg.execution.tp_require_non_negative_net
+                    ok_net = can_take_profit_net_non_negative(
+                        pos,
+                        px,
+                        self.cfg.execution.fee_bps,
+                        self.cfg.execution.slippage_bps,
+                    )
+                    if (not require_net) or ok_net:
+                        closed.append(self.close_trade(pos, px, "take_profit"))
+                        continue
+                    # Hit BB mid but fees would make net < 0 — hold; time_stop/session may still apply
+                    logger.debug(
+                        "TP deferred (net would be negative) %s %s mark=%.6f",
+                        pos.side.value,
+                        pos.symbol,
+                        px,
+                    )
 
             if (
                 close_fx_at_session_end

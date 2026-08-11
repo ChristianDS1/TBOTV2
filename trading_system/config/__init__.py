@@ -75,6 +75,10 @@ class ExecutionConfig(BaseModel):
     fee_bps: float = 4.0
     slippage_bps: float = 2.0
     poll_interval_seconds: int = 5
+    hard_min_edge_multiple: float = 1.0
+    soft_min_edge_multiple: float = 1.5
+    soft_edge_confidence_penalty: float = 10.0
+    tp_require_non_negative_net: bool = True
 
 
 class DashboardConfig(BaseModel):
