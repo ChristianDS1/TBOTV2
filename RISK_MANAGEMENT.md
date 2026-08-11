@@ -16,9 +16,9 @@ If paper cash/equity is exhausted and there are **no open positions**, capital i
 
 Does **not** wipe learned patterns / history.
 
-- Hard-reject only if distance to TP &lt; `1.0 ×` round-trip cost (`insufficient_edge_vs_fees`)
-- Soft zone `1.0–1.5 ×`: still enters, −10 confidence (`thin_edge`)
-- Take-profit close deferred if estimated **net** would be &lt; 0 (hold until better or `time_stop`)
+- Hard-reject only if distance to TP &lt; `0.75 ×` round-trip cost (`insufficient_edge_vs_fees`)
+- Soft zone `0.75–1.25 ×`: still enters, −8 confidence (`thin_edge`)
+- Take-profit close deferred if estimated **net** would be &lt; 0 (hold until better or `time_stop`, default **12m**)
 
 ## Kill switch (technical)
 

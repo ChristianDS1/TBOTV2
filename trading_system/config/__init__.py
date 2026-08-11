@@ -41,7 +41,7 @@ class StrategyConfig(BaseModel):
     rsi_overbought: float = 70
     macd_fast: list[int] = Field(default_factory=lambda: [5, 8, 9])
     macd_slow: list[int] = Field(default_factory=lambda: [13, 21, 9])
-    max_hold_minutes: int = 5
+    max_hold_minutes: int = 12
     discovery_phase: bool = True
     entry_confidence_floor: float = 0
 
@@ -75,9 +75,9 @@ class ExecutionConfig(BaseModel):
     fee_bps: float = 4.0
     slippage_bps: float = 2.0
     poll_interval_seconds: int = 5
-    hard_min_edge_multiple: float = 1.0
-    soft_min_edge_multiple: float = 1.5
-    soft_edge_confidence_penalty: float = 10.0
+    hard_min_edge_multiple: float = 0.75
+    soft_min_edge_multiple: float = 1.25
+    soft_edge_confidence_penalty: float = 8.0
     tp_require_non_negative_net: bool = True
 
 

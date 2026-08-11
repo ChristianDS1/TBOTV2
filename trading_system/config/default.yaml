@@ -36,7 +36,7 @@ strategy:
   rsi_overbought: 70
   macd_fast: [5, 8, 9]
   macd_slow: [13, 21, 9]
-  max_hold_minutes: 5
+  max_hold_minutes: 12
   discovery_phase: true
   entry_confidence_floor: 0  # do not block in discovery
 
@@ -68,9 +68,10 @@ execution:
   slippage_bps: 2.0
   poll_interval_seconds: 5
   # Fee-aware edge (does NOT wipe learned patterns — forward-looking only)
-  hard_min_edge_multiple: 1.0   # reject only if edge < 1x round-trip cost
-  soft_min_edge_multiple: 1.5   # still enter, mild confidence penalty
-  soft_edge_confidence_penalty: 10.0
+  # Soft discovery defaults: only block near-hopeless edges; keep trade flow.
+  hard_min_edge_multiple: 0.75  # was 1.0 — too strict on 1m compression
+  soft_min_edge_multiple: 1.25  # was 1.5 — thinner soft band
+  soft_edge_confidence_penalty: 8.0
   tp_require_non_negative_net: true  # hit BB mid but wait if fees would make net < 0
 
 dashboard:

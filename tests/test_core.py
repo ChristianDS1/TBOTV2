@@ -522,26 +522,30 @@ def test_entry_edge_hard_and_soft():
         take_profit=100.05,
         fee_bps=4.0,
         slippage_bps=2.0,
-        hard_multiple=1.0,
-        soft_multiple=1.5,
+        hard_multiple=0.75,
+        soft_multiple=1.25,
     )
     assert hard.hard_reject is True
 
-    # 15 bps to TP vs 12 cost → soft zone (~1.25x)
+    # 12 bps to TP vs 12 cost → soft zone (~1.0x with soft=1.25)
     soft = assess_entry_edge(
         price=100.0,
-        take_profit=100.15,
+        take_profit=100.12,
         fee_bps=4.0,
         slippage_bps=2.0,
+        hard_multiple=0.75,
+        soft_multiple=1.25,
     )
     assert soft.hard_reject is False
     assert soft.soft_penalty is True
-    # 30 bps → ok
+    # 20 bps → ok
     ok = assess_entry_edge(
         price=100.0,
-        take_profit=100.30,
+        take_profit=100.20,
         fee_bps=4.0,
         slippage_bps=2.0,
+        hard_multiple=0.75,
+        soft_multiple=1.25,
     )
     assert ok.hard_reject is False
     assert ok.soft_penalty is False
