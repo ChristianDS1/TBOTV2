@@ -22,14 +22,15 @@ discovery → pattern → optimization → exploitation (suggested by trade coun
 - Base strategy unchanged.
 - Scope: **only that key** — does **not** treat BB+RSI+MACD+rejection as all wrong.
 
-### Daily report pattern audit
+### Strategy vs costs
 
-For each pattern (accepted or still observing) the report includes:
+Pattern win/loss uses **strategy outcome**:
 
-- Decision: ACEPTADO / NO ACEPTADO
-- Repetition count at confirmation (or current count / threshold)
-- Effect applied (or none)
-- Explicit reason text
+1. `exit_reason == take_profit` → strategy **win**
+2. else `gross_pnl > 0` → strategy **win**
+3. else strategy **loss**
+
+If strategy win but **net PnL ≤ 0** (fees/slippage): counted as **cost_erosion**, not as a strategy loss. Confirmed cost patterns are insight-only (no confidence penalty on entry rules).
 
 
 ## Daily report (UTC rollover)

@@ -25,11 +25,10 @@ class PaperExecutor:
         return notional * bps / 10_000
 
     def open_trade(self, signal: Signal, size: float, price: float) -> Position:
-        # Slippage adverse
+        # Slippage adverse on fill; keep pre-slip mark for strategy gross PnL
         slip = self.cfg.execution.slippage_bps / 10_000
         fill = price * (1 + slip) if signal.side.value == "call" else price * (1 - slip)
         fees = self._cost_bps(size)
-        # Reserve size + fees from cash (PnL settled on close)
         self.portfolio.debit(size + fees)
 
         pos = Position(
@@ -39,6 +38,7 @@ class PaperExecutor:
             strategy=signal.strategy,
             qty=size,
             entry_price=fill,
+            entry_mark=price,
             entry_time=datetime.now(timezone.utc),
             take_profit=signal.take_profit,
             stop_loss=signal.stop_loss,
@@ -67,24 +67,39 @@ class PaperExecutor:
         slip = self.cfg.execution.slippage_bps / 10_000
         fill = price * (1 - slip) if pos.side.value == "call" else price * (1 + slip)
         direction = 1 if pos.side.value == "call" else -1
-        raw_pnl = direction * (fill - pos.entry_price) / pos.entry_price * pos.qty
+
+        # Strategy gross: mark-to-mark (no fees, no slip)
+        entry_ref = pos.entry_mark if pos.entry_mark and pos.entry_mark > 0 else pos.entry_price
+        gross = direction * (price - entry_ref) / entry_ref * pos.qty
+
+        # Net cash impact on this close: slipped fill move minus exit fee
+        # (entry fee already debited at open)
+        raw_fill_pnl = direction * (fill - pos.entry_price) / pos.entry_price * pos.qty
         exit_fees = self._cost_bps(pos.qty)
-        pnl = raw_pnl - exit_fees
+        net = raw_fill_pnl - exit_fees
+
+        # Cost erosion: strategy achieved target / gross positive but net red
+        strategy_ok = reason == "take_profit" or gross > 0
+        cost_erosion = bool(strategy_ok and net <= 0)
+
         pos.exit_price = fill
         pos.exit_time = datetime.now(timezone.utc)
-        pos.pnl = pnl
+        pos.gross_pnl = gross
+        pos.pnl = net
         pos.fees = (pos.fees or 0) + exit_fees
         pos.exit_reason = reason
+        pos.cost_erosion = cost_erosion
         pos.status = TradeStatus.CLOSED
-        # Return reserved size + pnl
-        self.portfolio.credit(pos.qty + pnl)
+        self.portfolio.credit(pos.qty + net)
         self.db.update_trade(pos)
         logger.info(
-            "CLOSE %s %s pnl=%.4f reason=%s",
+            "CLOSE %s %s gross=%.4f net=%.4f reason=%s cost_erosion=%s",
             pos.side.value,
             pos.symbol,
-            pnl,
+            gross,
+            net,
             reason,
+            cost_erosion,
         )
         return pos
 
@@ -101,13 +116,11 @@ class PaperExecutor:
             if px is None:
                 continue
 
-            # Time stop
             max_hold = timedelta(minutes=self.cfg.strategy.max_hold_minutes)
             if now - pos.entry_time >= max_hold:
                 closed.append(self.close_trade(pos, px, "time_stop"))
                 continue
 
-            # Take profit at BB mid
             if pos.take_profit is not None:
                 if pos.side.value == "call" and px >= pos.take_profit:
                     closed.append(self.close_trade(pos, px, "take_profit"))
@@ -116,7 +129,6 @@ class PaperExecutor:
                     closed.append(self.close_trade(pos, px, "take_profit"))
                     continue
 
-            # Forex session end for intraday
             if (
                 close_fx_at_session_end
                 and pos.venue.value == "forex"

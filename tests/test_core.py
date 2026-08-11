@@ -427,3 +427,87 @@ def test_report_shows_accept_reject_reasons(cfg, tmp_db, tmp_path):
     assert "Repeticiones al confirmar: **20**" in text
     assert "regime=high_vol" in text
     assert "solo esta condición contextual" in text or "solo esa key" in text or "NO invalida los 5" in text
+
+
+def test_take_profit_negative_net_is_strategy_win_not_loss(cfg, tmp_db):
+    from trading_system.learning import classify_strategy_outcome
+
+    pos = _closed_pos(pnl=-0.01, regime="ranging", exit_reason="take_profit")
+    pos.gross_pnl = 0.02
+    pos.cost_erosion = True
+    direction, erosion = classify_strategy_outcome(pos)
+    assert direction == "win"
+    assert erosion is True
+
+    le = LearningEngine(cfg.learning, tmp_db)
+    pos.id = tmp_db.insert_trade(pos)
+    le.on_trade_closed(pos)
+    wins = tmp_db.get_patterns(direction="win")
+    losses = tmp_db.get_patterns(direction="loss")
+    costs = tmp_db.get_patterns(direction="cost_erosion")
+    assert any(p["pattern_key"] == "exit_reason=take_profit" for p in wins)
+    assert not any(p["pattern_key"] == "exit_reason=take_profit" for p in losses)
+    assert any("cost_erosion" in p["pattern_key"] for p in costs)
+
+
+def test_close_trade_sets_gross_and_cost_erosion(cfg, tmp_db):
+    from trading_system.execution import PaperExecutor
+    from trading_system.portfolio import Portfolio
+
+    port = Portfolio(tmp_db, 100)
+    ex = PaperExecutor(cfg, tmp_db, port)
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        take_profit=65010,
+        timestamp=datetime.now(timezone.utc),
+        regime=MarketRegime.RANGING,
+    )
+    pos = ex.open_trade(sig, 2.5, 65000)
+    # Tiny favorable move that fees can wipe
+    closed = ex.close_trade(pos, 65005, "take_profit")
+    assert closed.gross_pnl is not None
+    assert closed.exit_reason == "take_profit"
+    # With default fee+slip bps, small move often nets <= 0
+    direction, erosion = __import__(
+        "trading_system.learning", fromlist=["classify_strategy_outcome"]
+    ).classify_strategy_outcome(closed)
+    assert direction == "win"
+    if closed.pnl is not None and closed.pnl <= 0:
+        assert erosion is True
+        assert closed.cost_erosion is True
+
+
+def test_rebuild_reclassifies_legacy_take_profit(cfg, tmp_db):
+    from trading_system.learning.rebuild import rebuild_patterns
+
+    # Legacy-style trade: TP exit, negative net, no gross fields
+    pos = _closed_pos(pnl=-0.004, regime="ranging", exit_reason="take_profit")
+    pos.gross_pnl = None
+    pos.cost_erosion = False
+    pos.entry_mark = None
+    pos.exit_price = 100.1
+    pos.fees = 0.01
+    pos.id = tmp_db.insert_trade(pos)
+
+    # Wrong historical classification as loss
+    tmp_db.increment_pattern("exit_reason=take_profit", "loss", datetime.now(timezone.utc).isoformat())
+
+    summary = rebuild_patterns(tmp_db, cfg.learning, quiet=True)
+    assert summary["closed_trades"] == 1
+    assert summary["tp_net_negative_reclassified"] == 1
+
+    refreshed = tmp_db.get_all_closed()[0]
+    assert refreshed.gross_pnl is not None
+    assert refreshed.cost_erosion is True
+
+    wins = tmp_db.get_patterns(direction="win")
+    losses = tmp_db.get_patterns(direction="loss")
+    costs = tmp_db.get_patterns(direction="cost_erosion")
+    assert any(p["pattern_key"] == "exit_reason=take_profit" for p in wins)
+    assert not any(p["pattern_key"] == "exit_reason=take_profit" for p in losses)
+    assert len(costs) >= 1

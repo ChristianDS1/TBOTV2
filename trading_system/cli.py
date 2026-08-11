@@ -33,6 +33,11 @@ def main(argv: list[str] | None = None) -> None:
     rp.add_argument("--day", default=None, help="UTC day YYYY-MM-DD (default today)")
     rp.add_argument("--simulate", action="store_true")
 
+    sub.add_parser(
+        "rebuild-patterns",
+        help="Backfill gross/cost_erosion on closed trades and rebuild pattern evidence",
+    )
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
@@ -67,6 +72,14 @@ def main(argv: list[str] | None = None) -> None:
         engine = TradingEngine(cfg, simulate=True)
         path = engine.force_daily_report(args.day)
         print(path)
+
+    elif args.cmd == "rebuild-patterns":
+        from trading_system.database import Database
+        from trading_system.learning.rebuild import rebuild_patterns
+
+        db = Database(cfg.db_path())
+        summary = rebuild_patterns(db, cfg.learning, quiet=True)
+        print(summary)
 
     else:
         parser.print_help()

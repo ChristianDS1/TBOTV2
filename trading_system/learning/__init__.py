@@ -88,6 +88,31 @@ def pattern_keys_from_trade(pos: Position) -> list[str]:
     return keys
 
 
+def classify_strategy_outcome(pos: Position) -> tuple[str, bool]:
+    """
+    Strategy win/loss for pattern learning — not net cash.
+
+    - take_profit => strategy win (signal hit its target)
+    - else use gross_pnl if available
+    - else fall back to net pnl
+
+    cost_erosion: strategy win but net pnl <= 0 (fees/slippage), tracked separately.
+    """
+    net = pos.pnl if pos.pnl is not None else 0.0
+    gross = pos.gross_pnl
+
+    if pos.exit_reason == "take_profit":
+        strategy_win = True
+    elif gross is not None:
+        strategy_win = gross > 0
+    else:
+        strategy_win = net > 0
+
+    cost_erosion = bool(strategy_win and net <= 0) or bool(pos.cost_erosion)
+    direction = "win" if strategy_win else "loss"
+    return direction, cost_erosion
+
+
 def signal_pattern_keys(signal: Signal) -> list[str]:
     return [
         f"regime={signal.regime.value}",
@@ -119,22 +144,70 @@ class LearningEngine:
         closed = self.db.get_all_closed()
         self.ranker.update_from_trades(closed)
 
-        won = (pos.pnl or 0) > 0
-        direction = "win" if won else "loss"
+        direction, cost_erosion = classify_strategy_outcome(pos)
         now = datetime.now(timezone.utc).isoformat()
         threshold = self.cfg.pattern_min_occurrences
         newly_confirmed: list[dict[str, Any]] = []
 
-        # Observation log only — not a confirmed pattern
+        label = "WIN" if direction == "win" else "LOSS"
+        erosion_note = (
+            " [COST_EROSION: strategy OK, net<=0 by fees/slip]" if cost_erosion else ""
+        )
         self.db.insert_insight(
             "trade_observation",
             (
-                f"{'WIN' if won else 'LOSS'} {pos.strategy} {pos.symbol} "
-                f"regime={pos.regime} conf={pos.confidence:.1f} pnl={pos.pnl:.4f} "
-                f"exit={pos.exit_reason}"
+                f"{label}(strategy) {pos.strategy} {pos.symbol} "
+                f"regime={pos.regime} conf={pos.confidence:.1f} "
+                f"gross={pos.gross_pnl} net={pos.pnl} exit={pos.exit_reason}"
+                f"{erosion_note}"
             ),
-            {"trade_id": pos.id, "direction": direction},
+            {
+                "trade_id": pos.id,
+                "direction": direction,
+                "cost_erosion": cost_erosion,
+                "gross_pnl": pos.gross_pnl,
+                "net_pnl": pos.pnl,
+            },
         )
+
+        if cost_erosion:
+            cost_key = (
+                f"cost_erosion|exit={pos.exit_reason or 'unknown'}|symbol={pos.symbol}"
+            )
+            ev = self.db.increment_pattern(cost_key, "cost_erosion", now)
+            count = int(ev["count"])
+            if count >= threshold and ev["status"] != "confirmed":
+                detail = (
+                    f"Cost erosion confirmed: strategy outcome was win/TP but net PnL <= 0 "
+                    f"due to fees/slippage. Occurrences={count} (≥{threshold}). "
+                    f"Does NOT penalize strategy entry rules — review fee/size/hold instead."
+                )
+                self.db.confirm_pattern(
+                    cost_key,
+                    "cost_erosion",
+                    confirmed_count=count,
+                    decision_reason=f"ACEPTADO cost_erosion: {detail}",
+                    effect_action="cost_insight_only",
+                )
+                self.db.insert_applied_change(
+                    cost_key,
+                    "cost_erosion",
+                    "cost_insight_only",
+                    detail,
+                    occurrences=count,
+                    threshold=threshold,
+                )
+                self.db.insert_insight(
+                    "cost_erosion", detail, {"count": count, "key": cost_key}
+                )
+                newly_confirmed.append(
+                    {
+                        "pattern_key": cost_key,
+                        "direction": "cost_erosion",
+                        "count": count,
+                        "action": "cost_insight_only",
+                    }
+                )
 
         for key in pattern_keys_from_trade(pos):
             ev = self.db.increment_pattern(key, direction, now)
@@ -142,7 +215,6 @@ class LearningEngine:
             status = ev["status"]
 
             if count < threshold:
-                # Still observing — never apply changes
                 continue
 
             if status != "confirmed":
@@ -152,6 +224,7 @@ class LearningEngine:
                 decision_reason = (
                     f"ACEPTADO como patrón {direction}: la key '{key}' se repitió "
                     f"{count} veces (≥ umbral {threshold}). "
+                    f"Clasificación por señal/gross (no por net cash). "
                     f"Scope: solo esta condición contextual — NO invalida los 5 "
                     f"indicadores de entrada (BB/RSI/MACD/rejection) en bloque. "
                     f"Efecto aplicado: {action_info['action']}."

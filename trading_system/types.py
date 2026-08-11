@@ -94,9 +94,12 @@ class Position(BaseModel):
     status: TradeStatus = TradeStatus.OPEN
     exit_price: float | None = None
     exit_time: datetime | None = None
-    pnl: float | None = None
+    pnl: float | None = None  # net (after fees/slippage) — cash impact
+    gross_pnl: float | None = None  # strategy mark-to-mark before fees
+    entry_mark: float | None = None  # pre-slippage entry reference
     fees: float = 0.0
     exit_reason: str | None = None
+    cost_erosion: bool = False  # strategy OK / TP hit but net <= 0 due to costs
 
 
 class RejectedSignal(BaseModel):

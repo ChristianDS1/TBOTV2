@@ -120,7 +120,9 @@ def write_daily_report(
         "> Nota: los patrones de aprendizaje son keys contextuales "
         "(`regime`, `symbol`, `exit_reason`, etc.), **no** el paquete completo "
         "de los 5 indicadores de entrada. Una loss confirmada penaliza/rechaza "
-        "solo esa key, no marca BB+RSI+MACD+rejection como inválidos en bloque.",
+        "solo esa key, no marca BB+RSI+MACD+rejection como inválidos en bloque. "
+        "Win/loss de estrategia usa **gross/TP**, no net cash; "
+        "TP con PnL neto negativo = cost erosion, no loss de estrategia.",
         "",
         "## 2. Errores identificados (loss patterns)",
         f"- Confirmation threshold: **≥{threshold}** occurrences",
@@ -149,6 +151,24 @@ def write_daily_report(
     lines += ["", "### Candidatos NO aceptados aún (observación)"]
     lines += _pattern_decision_block(
         observing_wins, threshold=threshold, direction="win", confirmed=False
+    )
+
+    cost_patterns = db.get_patterns(direction="cost_erosion")
+    lines += [
+        "",
+        "## 3b. Cost erosion (TP/gross OK pero net ≤ 0 por fees/slip)",
+        f"- Threshold: ≥{threshold}. Estos **no** penalizan la estrategia.",
+        "",
+    ]
+    confirmed_cost = [p for p in cost_patterns if p["status"] == "confirmed"]
+    observing_cost = [p for p in cost_patterns if p["status"] == "observing"]
+    lines += ["### Confirmados"]
+    lines += _pattern_decision_block(
+        confirmed_cost, threshold=threshold, direction="cost_erosion", confirmed=True
+    )
+    lines += ["", "### En observación"]
+    lines += _pattern_decision_block(
+        observing_cost, threshold=threshold, direction="cost_erosion", confirmed=False
     )
 
     lines += [
@@ -188,7 +208,7 @@ def write_daily_report(
         i
         for i in day_insights
         if i["category"]
-        in ("confirmed_pattern", "capital_reset", "ml_train", "retrain")
+        in ("confirmed_pattern", "capital_reset", "ml_train", "retrain", "cost_erosion")
     ]
     lines += ["", "### Insights clave del día"]
     if day_obs:

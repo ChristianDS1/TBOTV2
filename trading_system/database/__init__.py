@@ -39,7 +39,10 @@ CREATE TABLE IF NOT EXISTS trades (
     exit_time TEXT,
     pnl REAL,
     fees REAL DEFAULT 0,
-    exit_reason TEXT
+    exit_reason TEXT,
+    gross_pnl REAL,
+    entry_mark REAL,
+    cost_erosion INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS rejected_signals (
@@ -165,6 +168,21 @@ class Database:
                     conn.execute(
                         f"ALTER TABLE pattern_evidence ADD COLUMN {name} {typ}"
                     )
+        self._migrate_trade_columns()
+
+    def _migrate_trade_columns(self) -> None:
+        needed = {
+            "gross_pnl": "REAL",
+            "entry_mark": "REAL",
+            "cost_erosion": "INTEGER DEFAULT 0",
+        }
+        with self.connection() as conn:
+            cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()
+            }
+            for name, typ in needed.items():
+                if name not in cols:
+                    conn.execute(f"ALTER TABLE trades ADD COLUMN {name} {typ}")
 
     def insert_trade(self, pos: Position) -> int:
         with self.connection() as conn:
@@ -173,8 +191,9 @@ class Database:
                 INSERT INTO trades (
                     symbol, venue, side, strategy, qty, entry_price, entry_time,
                     take_profit, stop_loss, confidence, regime, features_json,
-                    exploration, status, exit_price, exit_time, pnl, fees, exit_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exploration, status, exit_price, exit_time, pnl, fees, exit_reason,
+                    gross_pnl, entry_mark, cost_erosion
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pos.symbol,
@@ -196,6 +215,9 @@ class Database:
                     pos.pnl,
                     pos.fees,
                     pos.exit_reason,
+                    pos.gross_pnl,
+                    pos.entry_mark,
+                    int(pos.cost_erosion),
                 ),
             )
             return int(cur.lastrowid)
@@ -206,7 +228,8 @@ class Database:
             conn.execute(
                 """
                 UPDATE trades SET
-                    status=?, exit_price=?, exit_time=?, pnl=?, fees=?, exit_reason=?
+                    status=?, exit_price=?, exit_time=?, pnl=?, fees=?, exit_reason=?,
+                    gross_pnl=?, entry_mark=?, cost_erosion=?
                 WHERE id=?
                 """,
                 (
@@ -216,6 +239,9 @@ class Database:
                     pos.pnl,
                     pos.fees,
                     pos.exit_reason,
+                    pos.gross_pnl,
+                    pos.entry_mark,
+                    int(pos.cost_erosion),
                     pos.id,
                 ),
             )
@@ -514,8 +540,15 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    def clear_pattern_learning_state(self) -> None:
+        """Wipe pattern counters and applied changes before a historical rebuild."""
+        with self.connection() as conn:
+            conn.execute("DELETE FROM pattern_evidence")
+            conn.execute("DELETE FROM applied_changes")
+
     @staticmethod
     def _row_to_position(row: sqlite3.Row) -> Position:
+        keys = set(row.keys())
         return Position(
             id=row["id"],
             symbol=row["symbol"],
@@ -537,4 +570,7 @@ class Database:
             pnl=row["pnl"],
             fees=row["fees"] or 0.0,
             exit_reason=row["exit_reason"],
+            gross_pnl=row["gross_pnl"] if "gross_pnl" in keys else None,
+            entry_mark=row["entry_mark"] if "entry_mark" in keys else None,
+            cost_erosion=bool(row["cost_erosion"]) if "cost_erosion" in keys and row["cost_erosion"] is not None else False,
         )
