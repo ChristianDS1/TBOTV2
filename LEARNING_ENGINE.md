@@ -1,0 +1,39 @@
+# Learning Engine
+
+## Phases
+
+discovery → pattern → optimization → exploitation (suggested by trade count; config sets starting phase).
+
+## Pattern evidence (≥20)
+
+- Every closed trade increments counters for keys: `regime`, `symbol`, `exit_reason`, `confidence_bucket`, `strategy`, and `regime|exit`.
+- **Win and loss** both require `pattern_min_occurrences` (default **20**) before confirmation.
+- Below 20: observation only — no hypothesis action, no confidence effect.
+
+### Confirmed win pattern
+
+- Effect: **confidence boost only** (`win_confidence_boost`, default +8).
+- Does **not** modify entry rules / strategy / the pattern itself.
+
+### Confirmed loss pattern
+
+- Effect: confidence penalty and optional **soft-reject** (`loss_soft_reject`).
+- Base strategy unchanged.
+
+Applied effects are logged in `applied_changes` for the daily report.
+
+## Daily report (UTC rollover)
+
+Auto-generated at day change into `reports/daily/daily_YYYY-MM-DD.md`:
+
+1. Aprendizaje del día  
+2. Errores identificados (loss patterns)  
+3. Oportunidades (win patterns)  
+4. Cambios implementados  
+5. Progreso del aprendizaje  
+
+Manual: `python -m trading_system report` or `POST /api/report`.
+
+## Exploration / ranking / ML
+
+Unchanged: exploration budget, strategy ranking with sample-size uncertainty, `P(win|features)` retrain path.

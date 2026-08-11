@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>T-BOT Monitor</title>
+  <style>
+    :root {
+      --bg0: #0c1219;
+      --bg1: #141c27;
+      --line: #243042;
+      --text: #e7eef7;
+      --muted: #8fa3b8;
+      --accent: #3ecf8e;
+      --warn: #e6b35a;
+      --bad: #e85d5d;
+      --call: #3ecf8e;
+      --put: #e85d5d;
+      --font: "IBM Plex Sans", "Segoe UI", sans-serif;
+      --mono: "IBM Plex Mono", Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #1a2a3a 0%, transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, #152218 0%, transparent 50%),
+        var(--bg0);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 1.25rem 1.5rem 0.75rem;
+      border-bottom: 1px solid var(--line);
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      letter-spacing: 0.04em;
+      font-weight: 600;
+    }
+    header .meta { color: var(--muted); font-size: 0.85rem; font-family: var(--mono); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.75rem;
+      padding: 1rem 1.5rem;
+    }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    .metric {
+      background: linear-gradient(180deg, var(--bg1), #101821);
+      border: 1px solid var(--line);
+      padding: 0.9rem 1rem;
+    }
+    .metric .label { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric .value { font-size: 1.35rem; font-family: var(--mono); margin-top: 0.25rem; }
+    .pos { color: var(--accent); }
+    .neg { color: var(--bad); }
+    main {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 1rem;
+      padding: 0 1.5rem 1.5rem;
+    }
+    @media (max-width: 1000px) {
+      main { grid-template-columns: 1fr; }
+    }
+    section {
+      background: rgba(20, 28, 39, 0.85);
+      border: 1px solid var(--line);
+      padding: 1rem;
+      min-height: 220px;
+    }
+    section h2 {
+      margin: 0 0 0.75rem;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; font-family: var(--mono); }
+    th, td { text-align: left; padding: 0.35rem 0.4rem; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 500; }
+    .pill {
+      display: inline-block;
+      padding: 0.1rem 0.45rem;
+      font-size: 0.7rem;
+      border: 1px solid var(--line);
+    }
+    .pill.call { color: var(--call); border-color: #2a6b4e; }
+    .pill.put { color: var(--put); border-color: #6b2a2a; }
+    .status-bar {
+      padding: 0.5rem 1.5rem 1rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+    }
+    .kill { color: var(--bad); font-weight: 600; }
+    ul.insights { margin: 0; padding-left: 1.1rem; font-size: 0.82rem; color: #c5d2e0; }
+    ul.insights li { margin-bottom: 0.35rem; }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <header>
+    <h1>T-BOT Adaptive Monitor</h1>
+    <div class="meta" id="clock">—</div>
+  </header>
+  <div class="grid" id="metrics"></div>
+  <main>
+    <section>
+      <h2>Open Trades</h2>
+      <div id="open"></div>
+    </section>
+    <section>
+      <h2>Recent Closed</h2>
+      <div id="closed"></div>
+    </section>
+    <section>
+      <h2>Rejected Signals</h2>
+      <div id="rejected"></div>
+    </section>
+    <section>
+      <h2>Learning / Rankings</h2>
+      <div id="learning"></div>
+    </section>
+  </main>
+  <div class="status-bar" id="status"></div>
+  <script>
+    const fmt = (n, d=2) => (n === null || n === undefined || Number.isNaN(n)) ? "—" : Number(n).toFixed(d);
+    const pct = (n) => fmt(n * 100, 1) + "%";
+
+    function metric(label, value, cls="") {
+      return `<div class="metric"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
+    }
+
+    function sidePill(side) {
+      const s = (side || "").toLowerCase();
+      return `<span class="pill ${s}">${s.toUpperCase()}</span>`;
+    }
+
+    function renderTable(rows, cols) {
+      if (!rows || !rows.length) return "<div style='color:var(--muted)'>None</div>";
+      let h = "<table><thead><tr>" + cols.map(c => `<th>${c.label}</th>`).join("") + "</tr></thead><tbody>";
+      for (const r of rows) {
+        h += "<tr>" + cols.map(c => `<td>${c.render(r)}</td>`).join("") + "</tr>";
+      }
+      return h + "</tbody></table>";
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch("/api/monitor");
+        const data = await res.json();
+        const s = data.snapshot || {};
+        const pnlCls = (s.realized_pnl || 0) >= 0 ? "pos" : "neg";
+        document.getElementById("metrics").innerHTML = [
+          metric("Equity", fmt(s.equity, 2) + " €"),
+          metric("Cash", fmt(s.cash, 2) + " €"),
+          metric("Realized P&L", fmt(s.realized_pnl, 2), pnlCls),
+          metric("Open", s.open_positions ?? 0),
+          metric("Win Rate", pct(s.win_rate || 0)),
+          metric("Expectancy", fmt(s.expectancy, 3)),
+          metric("Profit Factor", fmt(s.profit_factor, 2)),
+          metric("Drawdown", pct(s.drawdown || 0)),
+          metric("Trades", s.total_trades ?? 0),
+          metric("Explore Ratio", pct(s.exploration_ratio || 0)),
+          metric("Phase", s.learning_phase || "—"),
+          metric("Kill Switch", s.kill_switch ? "ON" : "OFF", s.kill_switch ? "neg" : "pos"),
+        ].join("");
+
+        document.getElementById("open").innerHTML = renderTable(data.open_trades, [
+          { label: "Side", render: r => sidePill(r.side) },
+          { label: "Symbol", render: r => r.symbol },
+          { label: "Entry", render: r => fmt(r.entry_price, 5) },
+          { label: "Size", render: r => fmt(r.qty, 2) },
+          { label: "Conf", render: r => fmt(r.confidence, 1) },
+          { label: "Venue", render: r => r.venue },
+        ]);
+
+        document.getElementById("closed").innerHTML = renderTable(data.closed_trades, [
+          { label: "Side", render: r => sidePill(r.side) },
+          { label: "Symbol", render: r => r.symbol },
+          { label: "PnL", render: r => `<span class="${(r.pnl||0)>=0?'pos':'neg'}">${fmt(r.pnl,3)}</span>` },
+          { label: "Exit", render: r => r.exit_reason || "—" },
+          { label: "Conf", render: r => fmt(r.confidence, 1) },
+        ]);
+
+        document.getElementById("rejected").innerHTML = renderTable(data.rejected_signals, [
+          { label: "Symbol", render: r => r.symbol },
+          { label: "Reason", render: r => r.reason },
+          { label: "Conf", render: r => fmt(r.confidence, 1) },
+          { label: "Time", render: r => (r.timestamp || "").replace("T", " ").slice(0, 19) },
+        ]);
+
+        const ranks = (data.strategy_rankings || []).map(r =>
+          `<li><b>${r.strategy}</b> exp=${fmt(r.expectancy,3)} pf=${fmt(r.profit_factor,2)} n=${r.trades} [${r.status}]</li>`
+        ).join("") || "<li>No rankings yet</li>";
+        const insights = (data.insights || []).slice(0, 8).map(i =>
+          `<li>[${i.category}] ${i.content}</li>`
+        ).join("") || "<li>No insights yet</li>";
+        const fx = (s.venues && s.venues.forex) ? s.venues.forex : {};
+        const cr = (s.venues && s.venues.crypto) ? s.venues.crypto : {};
+        const pw = ((data.patterns || {}).wins || []).filter(p => p.status === "confirmed").slice(0, 5)
+          .map(p => `<li>WIN ✓ ${p.pattern_key} n=${p.count}</li>`).join("") || "<li>No confirmed wins yet</li>";
+        const pl = ((data.patterns || {}).losses || []).filter(p => p.status === "confirmed").slice(0, 5)
+          .map(p => `<li>LOSS ✓ ${p.pattern_key} n=${p.count}</li>`).join("") || "<li>No confirmed losses yet</li>";
+        document.getElementById("learning").innerHTML =
+          `<ul class="insights">${ranks}</ul>
+           <h2 style="margin-top:1rem">Confirmed patterns</h2>
+           <ul class="insights">${pw}${pl}</ul>
+           <h2 style="margin-top:1rem">Insights</h2>
+           <ul class="insights">${insights}</ul>
+           <h2 style="margin-top:1rem">Venues</h2>
+           <ul class="insights">
+             <li>Crypto ok=${cr.ok} ${cr.simulated ? "(simulated)" : ""}</li>
+             <li>Forex session=${fx.forex_session_open ? "OPEN" : "CLOSED"} provider=${fx.provider || "—"}</li>
+             <li>ML backend=${(data.model||{}).backend} brier=${fmt((data.model||{}).brier,4)}</li>
+             <li>Capital resets=${data.capital_resets ?? 0}</li>
+             <li>Daily report=${(data.daily_report||{}).day || "pending first rollover"}</li>
+           </ul>`;
+
+        const kill = data.kill_reason ? ` | <span class="kill">${data.kill_reason}</span>` : "";
+        const dr = data.daily_report || {};
+        const thr = (data.patterns && data.patterns.threshold) || 20;
+        document.getElementById("status").innerHTML =
+          `status=${data.status} | mode=${data.mode} | cycle=${data.cycle} | resets=${data.capital_resets ?? 0} | pattern≥${thr} | last_report=${dr.day || "—"} | refresh=5s${kill}`;
+        document.getElementById("clock").textContent = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
+      } catch (e) {
+        document.getElementById("status").textContent = "monitor fetch failed: " + e;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

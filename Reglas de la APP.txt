@@ -1,0 +1,2356 @@
+ADAPTIVE AI TRADING SYSTEM
+
+EXPLORATION + LEARNING + STRATEGY EVOLUTION
+
+Quiero que actúes como el arquitecto principal, quantitative trader, quantitative researcher, Python engineer, machine-learning engineer, data scientist, risk-management engineer, software architect, backtesting specialist y QA engineer responsable de diseñar y construir conmigo un sistema automatizado de trading algorítmico desde cero.
+
+El proyecto se desarrollará en Cursor, utilizando tu máxima capacidad de razonamiento, investigación, programación, análisis cuantitativo y uso de herramientas.
+
+No quiero que simplemente me des una respuesta genérica sobre trading.
+
+Quiero que investigues, diseñes, cuestiones mis supuestos cuando sea necesario, propongas mejoras y construyas progresivamente un sistema real y funcional.
+
+
+
+1. OBJETIVO PRINCIPAL DEL PROYECTO
+
+Quiero desarrollar un sistema automatizado de trading que pueda identificar y aprovechar oportunidades en diferentes horizontes temporales.
+
+El sistema NO debe estar limitado exclusivamente a scalping.
+
+Quiero que pueda evaluar oportunidades de:
+
+
+
+
+
+scalping
+
+
+
+intraday trading
+
+
+
+short-term trading
+
+
+
+swing trading
+
+y que determine dinámicamente cuál enfoque tiene más sentido dependiendo de:
+
+
+
+
+
+activo
+
+
+
+market regime
+
+
+
+volatilidad
+
+
+
+tendencia
+
+
+
+momentum
+
+
+
+liquidez
+
+
+
+timeframe
+
+
+
+señales disponibles
+
+
+
+historical expectancy
+
+
+
+riesgo
+
+
+
+oportunidades actuales
+
+No quiero imponer desde el principio que todas las operaciones tengan que durar solamente minutos.
+
+Si una oportunidad de intraday o swing tiene una expectativa significativamente mejor que una oportunidad de scalping, el sistema debe poder considerarla.
+
+La arquitectura debe permitir que en el futuro podamos añadir estrategias de diferentes horizontes temporales sin reconstruir todo el sistema.
+
+
+
+2. OBJETIVO CENTRAL
+
+Quiero construir un:
+
+Adaptive Quantitative Trading System
+
+que pueda:
+
+
+
+
+
+Identificar oportunidades.
+
+
+
+Ejecutar operaciones.
+
+
+
+Registrar cada decisión.
+
+
+
+Analizar resultados.
+
+
+
+Identificar patrones asociados con ganancias.
+
+
+
+Identificar patrones asociados con pérdidas.
+
+
+
+Aprender de ambos.
+
+
+
+Crear hipótesis de nuevas estrategias.
+
+
+
+Probar esas estrategias.
+
+
+
+Mantener las que demuestren mejora.
+
+
+
+Reducir gradualmente las decisiones que históricamente producen malos resultados.
+
+
+
+Dar mayor prioridad a configuraciones que demuestren una ventaja.
+
+
+
+Adaptarse a diferentes market regimes.
+
+
+
+Evolucionar progresivamente.
+
+Quiero que el sistema sea capaz de pasar de:
+
+exploration → learning → optimization → exploitation
+
+a medida que acumula evidencia.
+
+
+
+3. FILOSOFÍA MUY IMPORTANTE: EXPLORACIÓN AL INICIO
+
+Quiero modificar una parte fundamental de la filosofía del sistema.
+
+NO quiero que el bot sea excesivamente conservador al principio.
+
+Al inicio quiero que el sistema tenga una fase de exploración.
+
+Es aceptable que cometa errores.
+
+De hecho, quiero que pueda cometer errores controlados porque:
+
+cada operación perdedora genera información que puede utilizar para mejorar el sistema.
+
+No quiero exigir desde el primer día que cada operación tenga un confidence score extremadamente alto.
+
+No quiero que un sistema demasiado restrictivo termine haciendo tan pocas operaciones que no tenga suficientes datos para aprender.
+
+Por lo tanto, quiero implementar un sistema de:
+
+EXPLORATION vs EXPLOITATION
+
+Al principio:
+
+Exploration weight = HIGH
+
+Posteriormente:
+
+Exploitation weight = INCREASED
+
+A medida que acumula datos:
+
+
+
+
+
+las estrategias que producen buenos resultados reciben mayor prioridad
+
+
+
+las estrategias con mala expectancy reciben menor prioridad
+
+
+
+las configuraciones consistentemente perdedoras se reducen o eliminan
+
+
+
+las nuevas estrategias todavía pueden recibir oportunidades controladas de exploración
+
+
+
+4. MENOS FILTROS AL INICIO
+
+Quiero explícitamente que el sistema NO tenga demasiados filtros al principio.
+
+No quiero algo como:
+
+"Solamente operar si 15 indicadores están alineados."
+
+Eso podría eliminar demasiadas oportunidades y dificultar el aprendizaje.
+
+Al principio quiero un sistema con un entry threshold relativamente flexible, siempre que la operación:
+
+
+
+
+
+tenga una lógica identificable
+
+
+
+tenga un riesgo definido
+
+
+
+tenga datos suficientes para analizarla
+
+
+
+respete el Risk Manager
+
+El objetivo inicial no es conseguir una tasa de acierto perfecta.
+
+El objetivo inicial es:
+
+generar suficientes datos de calidad para descubrir qué funciona.
+
+
+
+5. EVOLUCIÓN DEL ENTRY THRESHOLD
+
+Quiero que el threshold pueda evolucionar.
+
+Ejemplo conceptual:
+
+Durante la fase inicial:
+
+Threshold relativamente bajo/moderado.
+
+Después de suficientes operaciones:
+
+Analizar qué señales con diferentes confidence scores realmente producen mejores resultados.
+
+Por ejemplo:
+
+Confidence 55–60
+Confidence 60–65
+Confidence 65–70
+Confidence 70–75
+Confidence 75–80
+Confidence 80+
+
+Y determinar empíricamente:
+
+
+
+
+
+win rate
+
+
+
+expectancy
+
+
+
+profit factor
+
+
+
+drawdown
+
+
+
+average return
+
+de cada grupo.
+
+Si se descubre que:
+
+Confidence 65+
+produce una expectancy positiva y robusta,
+
+el sistema puede comenzar a priorizar esas señales.
+
+No quiero que el threshold sea una cifra arbitraria.
+
+Quiero que sea data-driven y adaptable.
+
+
+
+6. EXPLORATION BUDGET
+
+Quiero que el sistema tenga un concepto de:
+
+Exploration Budget
+
+Esto significa que incluso después de encontrar estrategias buenas, el sistema puede reservar una pequeña cantidad de oportunidades para probar:
+
+
+
+
+
+nuevas estrategias
+
+
+
+nuevas combinaciones de features
+
+
+
+nuevos market regimes
+
+
+
+nuevas condiciones
+
+
+
+nuevos thresholds
+
+
+
+nuevas ideas
+
+Esto permitirá que el sistema continúe descubriendo oportunidades.
+
+Pero la exploración debe estar limitada por el Risk Manager.
+
+
+
+7. APRENDER DE LAS PÉRDIDAS
+
+Quiero que una operación perdedora NO sea simplemente considerada:
+
+"bad trade."
+
+Quiero que el sistema investigue:
+
+¿Por qué perdió?
+
+Por ejemplo:
+
+
+
+
+
+señal falsa
+
+
+
+breakout fallido
+
+
+
+tendencia incorrectamente identificada
+
+
+
+volatilidad inesperada
+
+
+
+volumen insuficiente
+
+
+
+entrada demasiado temprana
+
+
+
+entrada demasiado tarde
+
+
+
+market regime incorrecto
+
+
+
+spread
+
+
+
+slippage
+
+
+
+stop demasiado ajustado
+
+
+
+stop demasiado amplio
+
+
+
+take profit incorrecto
+
+
+
+estrategia incorrecta para ese timeframe
+
+Después quiero que el sistema agrupe las pérdidas y busque patrones.
+
+Ejemplo:
+
+"El 68% de las pérdidas de Strategy A ocurrieron cuando ADX < 18."
+
+Entonces puede crear una hipótesis:
+
+"Strategy A podría funcionar mejor si se reduce su utilización cuando ADX < 18."
+
+Después:
+
+Backtest
+→ Validation
+→ Out-of-sample
+→ Robustness
+→ Compare with previous version.
+
+
+
+8. APRENDER DE LAS GANANCIAS
+
+De igual manera, quiero que investigue:
+
+¿Por qué ganó?
+
+Debe buscar características comunes entre operaciones ganadoras.
+
+Por ejemplo:
+
+
+
+
+
+tendencia clara
+
+
+
+volumen elevado
+
+
+
+RSI en determinada zona
+
+
+
+price above VWAP
+
+
+
+breakout confirmado
+
+
+
+determinada volatilidad
+
+
+
+determinada hora
+
+
+
+determinado market regime
+
+Después puede descubrir:
+
+"Estas condiciones aparecen consistentemente en nuestras operaciones ganadoras."
+
+Y aumentar gradualmente la prioridad de esas condiciones.
+
+
+
+9. EL SISTEMA DEBE BUSCAR NUEVAS ESTRATEGIAS
+
+No quiero limitar el sistema a las estrategias que yo conozco.
+
+Quiero que pueda investigar y probar:
+
+
+
+
+
+momentum
+
+
+
+breakout
+
+
+
+pullback
+
+
+
+trend following
+
+
+
+mean reversion
+
+
+
+volatility expansion
+
+
+
+volatility contraction
+
+
+
+VWAP strategies
+
+
+
+price action
+
+
+
+statistical relationships
+
+
+
+multi-timeframe strategies
+
+
+
+regime-specific strategies
+
+
+
+combinations/hybrids
+
+Y otras estrategias que tú consideres interesantes.
+
+Si descubres una estrategia poco convencional pero técnicamente viable:
+
+propónla y pruébala.
+
+
+
+10. MULTI-TIMEFRAME SYSTEM
+
+Quiero que el sistema pueda analizar múltiples temporalidades.
+
+Por ejemplo:
+
+1m
+5m
+15m
+30m
+1h
+4h
+1D
+
+No significa que tenga que utilizar todas.
+
+Quiero que investigue cuáles son apropiadas.
+
+Una estrategia podría utilizar:
+
+Higher timeframe → determine regime
+
+Lower timeframe → determine entry
+
+Por ejemplo:
+
+1H → trend
+
+15M → setup
+
+5M → entry
+
+Pero esto solamente debe implementarse si las pruebas demuestran que aporta valor.
+
+
+
+11. SCALPING + INTRADAY + SWING
+
+Quiero que el sistema tenga la posibilidad de elegir entre diferentes estilos.
+
+SCALPING
+
+Operaciones de muy corta duración.
+
+INTRADAY
+
+Operaciones que pueden durar desde minutos hasta horas y, idealmente, cerrarse dentro de la sesión cuando sea apropiado.
+
+SWING
+
+Operaciones que pueden durar varios días cuando existe una oportunidad suficientemente atractiva.
+
+No quiero que el sistema fuerce todas las operaciones a cerrarse rápidamente.
+
+Quiero que determine el horizonte óptimo según la estrategia.
+
+Cada estrategia deberá indicar:
+
+Expected holding period.
+
+
+
+12. CAPITAL INICIAL
+
+Capital inicial:
+
+€100
+
+Quiero comenzar de forma experimental y controlada.
+
+
+
+13. POSITION SIZING
+
+La idea inicial es utilizar operaciones pequeñas.
+
+Por ejemplo:
+
+€2–€3 por operación.
+
+Existe una idea inicial de incrementar aproximadamente €1 el tamaño de las operaciones cuando el capital aumente €50.
+
+Ejemplo:
+
+€100 → €2–€3
+
+€150 → €3–€4
+
+€200 → €4–€5
+
+etc.
+
+Y reducir aproximadamente €1 cuando el capital retroceda €50.
+
+Ejemplo:
+
+€150 → €3–€4
+
+si vuelve a €100:
+
+€2–€3
+
+Sin embargo:
+
+NO quiero que implementes esta regla literalmente sin analizarla.
+
+Quiero que investigues si existe una metodología superior.
+
+Puedes considerar:
+
+
+
+
+
+fixed fractional
+
+
+
+volatility-adjusted sizing
+
+
+
+risk-per-trade
+
+
+
+ATR-based sizing
+
+
+
+drawdown-adjusted sizing
+
+
+
+equity curve scaling
+
+
+
+fractional Kelly
+
+
+
+confidence-adjusted sizing
+
+Si encuentras un método superior, propónlo.
+
+
+
+14. INTRADAY TRADE LIMIT
+
+Para las operaciones intraday quiero permitir inicialmente hasta aproximadamente:
+
+5 posiciones simultáneas
+
+como máximo.
+
+Esto NO es una cifra definitiva.
+
+Quiero que determines si es adecuada según:
+
+
+
+
+
+capital
+
+
+
+risk
+
+
+
+liquidity
+
+
+
+strategy
+
+
+
+correlation
+
+
+
+broker
+
+
+
+market
+
+El límite debe ser configurable.
+
+Cuando el capital llegue aproximadamente a:
+
+€150
+
+quiero evaluar si podemos aumentar el límite y/o el tamaño de las operaciones.
+
+Por ejemplo:
+
+€100 → máximo 5 intraday positions
+
+€150 → máximo 6
+
+€200 → máximo 7
+
+etc.
+
+Pero nuevamente:
+
+el Risk Manager siempre tendrá autoridad para reducir estos límites si el riesgo agregado es demasiado alto.
+
+
+
+15. CORRELATION RISK
+
+No quiero que el sistema considere:
+
+5 operaciones independientes
+
+si en realidad todas están expuestas al mismo factor.
+
+Por ejemplo:
+
+5 posiciones crypto altamente correlacionadas.
+
+El sistema debe considerar:
+
+aggregate exposure.
+
+Si varias posiciones están altamente correlacionadas, deben contar como una exposición conjunta para efectos de riesgo.
+
+
+
+16. CONFIDENCE SCORE
+
+Quiero mantener un confidence score, pero NO utilizarlo como una barrera excesivamente restrictiva al inicio.
+
+Puede ser:
+
+0–100.
+
+Pero durante la fase inicial:
+
+confidence score → ayuda a clasificar oportunidades
+
+NO necesariamente:
+
+confidence score → automáticamente bloquea operaciones.
+
+Quiero que el sistema aprenda qué niveles de confidence realmente tienen mejor expectancy.
+
+Con el tiempo:
+
+confidence score podrá convertirse en un filtro más importante.
+
+
+
+17. EXPLORATION PHASE
+
+Quiero dividir el sistema en fases.
+
+PHASE 1 — DISCOVERY
+
+Objetivo:
+
+Recolectar información.
+
+Permitir más operaciones razonables.
+
+Explorar diferentes estrategias.
+
+Explorar diferentes confidence scores.
+
+Explorar diferentes market regimes.
+
+Aprender.
+
+
+
+PHASE 2 — PATTERN DISCOVERY
+
+Identificar:
+
+
+
+
+
+winning patterns
+
+
+
+losing patterns
+
+
+
+strategy-specific patterns
+
+
+
+regime-specific patterns
+
+
+
+timeframe-specific patterns
+
+
+
+PHASE 3 — SELECTIVE OPTIMIZATION
+
+Aumentar progresivamente la prioridad de las configuraciones con:
+
+
+
+
+
+positive expectancy
+
+
+
+strong historical performance
+
+
+
+robust results
+
+
+
+acceptable drawdown
+
+
+
+PHASE 4 — EXPLOITATION
+
+Utilizar principalmente las estrategias que demostraron ventaja.
+
+Pero mantener un pequeño exploration budget.
+
+
+
+18. EL SISTEMA NO DEBE DEJAR DE EXPLORAR
+
+Incluso cuando encuentre una estrategia rentable:
+
+NO quiero que simplemente la use indefinidamente.
+
+Los mercados cambian.
+
+Quiero:
+
+Exploitation + Continuous Exploration
+
+para detectar:
+
+
+
+
+
+regime changes
+
+
+
+strategy decay
+
+
+
+new opportunities
+
+
+
+changing volatility
+
+
+
+changing market behavior
+
+
+
+19. LEARNING ENGINE
+
+Quiero un módulo específico:
+
+learning_engine
+
+Debe analizar:
+
+Historical trades
+Current trades
+Rejected trades
+Market conditions
+Strategy performance
+Feature importance
+Market regimes
+
+Y generar:
+
+
+
+
+
+insights
+
+
+
+hypotheses
+
+
+
+candidate improvements
+
+
+
+strategy rankings
+
+
+
+20. STRATEGY RANKING
+
+Cada estrategia tendrá un ranking dinámico.
+
+Por ejemplo:
+
+Strategy A
+Expectancy: +0.32R
+Win rate: 67%
+Profit factor: 1.84
+Drawdown: 4.2%
+
+Strategy B
+Expectancy: +0.08R
+Win rate: 58%
+Profit factor: 1.19
+Drawdown: 7.8%
+
+Strategy C
+Expectancy: -0.11R
+Win rate: 48%
+Profit factor: 0.82
+
+El sistema debería:
+
+A → high priority
+
+B → medium priority
+
+C → low priority / exploration only / retirement candidate
+
+Pero quiero que el ranking considere también:
+
+
+
+
+
+sample size
+
+
+
+recency
+
+
+
+robustness
+
+
+
+market regime
+
+
+
+confidence
+
+
+
+statistical uncertainty
+
+
+
+21. SAMPLE SIZE
+
+NO quiero que el sistema diga:
+
+"Strategy A is amazing!"
+
+porque ganó 7 de 8 trades.
+
+Debe considerar el tamaño de muestra.
+
+Una estrategia con:
+
+8 trades
+
+no debe recibir automáticamente mayor prioridad que una estrategia con:
+
+500 trades.
+
+Quiero utilizar métodos estadísticos apropiados para medir incertidumbre.
+
+
+
+22. RECENCY WEIGHTING
+
+También quiero que investigues si los resultados recientes deberían tener más peso.
+
+Por ejemplo:
+
+Una estrategia que funcionaba hace 2 años pero dejó de funcionar recientemente no debería mantener el mismo ranking.
+
+Considera:
+
+
+
+
+
+rolling windows
+
+
+
+exponentially weighted performance
+
+
+
+regime-specific performance
+
+
+
+decay functions
+
+si son apropiados.
+
+
+
+23. STRATEGY RETIREMENT
+
+Quiero que las estrategias puedan:
+
+
+
+
+
+active
+
+
+
+reduced
+
+
+
+exploration-only
+
+
+
+paused
+
+
+
+retired
+
+Una estrategia no debe ser eliminada permanentemente sin guardar su historial.
+
+Podemos reactivarla posteriormente si cambia el market regime.
+
+
+
+24. BACKTESTING
+
+Mantén todo el sistema de backtesting descrito anteriormente.
+
+Debe incluir:
+
+
+
+
+
+commissions
+
+
+
+fees
+
+
+
+spread
+
+
+
+slippage
+
+
+
+latency
+
+
+
+realistic execution
+
+
+
+position sizing
+
+
+
+risk limits
+
+Y métricas:
+
+
+
+
+
+win rate
+
+
+
+average win
+
+
+
+average loss
+
+
+
+expectancy
+
+
+
+profit factor
+
+
+
+Sharpe
+
+
+
+Sortino
+
+
+
+maximum drawdown
+
+
+
+recovery factor
+
+
+
+number of trades
+
+
+
+longest losing streak
+
+
+
+MFE
+
+
+
+MAE
+
+
+
+net P&L
+
+
+
+25. NO OPTIMIZAR SOLAMENTE WIN RATE
+
+Quiero que el sistema priorice:
+
+
+
+
+
+Positive expectancy
+
+
+
+Risk-adjusted return
+
+
+
+Controlled drawdown
+
+
+
+Robustness
+
+
+
+Consistency
+
+
+
+Capital preservation
+
+
+
+Scalability
+
+Pero quiero explícitamente que el sistema:
+
+aprenda y aumente gradualmente la prioridad de las estrategias que demuestren mayor porcentaje de operaciones ganadoras cuando ese win rate también esté acompañado por una expectancy saludable.
+
+
+
+26. MARKET REGIME DETECTION
+
+Mantén el sistema de:
+
+
+
+
+
+bullish trend
+
+
+
+bearish trend
+
+
+
+ranging
+
+
+
+high volatility
+
+
+
+low volatility
+
+
+
+breakout
+
+
+
+compression
+
+
+
+momentum
+
+
+
+mean reversion
+
+
+
+abnormal volatility
+
+Y permite que cada estrategia tenga diferentes pesos según el regime.
+
+
+
+27. MULTI-STRATEGY ARCHITECTURE
+
+Mantén la arquitectura multi-strategy.
+
+Pero permite que el sistema descubra cuáles estrategias merecen más capital, atención y frecuencia de ejecución.
+
+
+
+28. REJECTED SIGNALS
+
+Mantén el registro de señales rechazadas.
+
+Esto será todavía más importante durante la fase exploratoria.
+
+Quiero poder analizar:
+
+"¿Qué pasó con las señales que inicialmente no tomamos?"
+
+Esto puede ayudarnos a determinar si:
+
+
+
+
+
+estamos filtrando demasiado
+
+
+
+estamos filtrando demasiado poco
+
+
+
+nuestro confidence score funciona
+
+
+
+nuestro entry threshold debe cambiar
+
+
+
+29. DAILY LEARNING
+
+Mantén el reporte diario.
+
+Pero agrega:
+
+EXPLORATION RESULTS
+
+
+
+
+
+new strategies tested
+
+
+
+new patterns discovered
+
+
+
+rejected signals that would have won
+
+
+
+rejected signals that would have lost
+
+
+
+current best strategy
+
+
+
+current worst strategy
+
+
+
+strategies gaining evidence
+
+
+
+strategies losing evidence
+
+
+
+30. STRATEGY EVOLUTION ENGINE
+
+Mantén el:
+
+Strategy Evolution Engine
+
+pero ahora debe tener dos objetivos:
+
+EXPLOITATION
+
+Optimizar las estrategias que ya sabemos que funcionan.
+
+EXPLORATION
+
+Descubrir nuevas estrategias que podrían funcionar mejor.
+
+
+
+31. AUTONOMOUS HYPOTHESIS GENERATION
+
+Quiero que el sistema pueda formular hipótesis.
+
+Ejemplo:
+
+"Los breakouts con relative volume > 1.5 y ADX > 20 parecen tener mejor expectancy."
+
+Entonces:
+
+Hypothesis #023
+
+Test:
+
+ADX > 20
+Relative volume > 1.5
+
+Compare against:
+
+baseline.
+
+Si mejora:
+
+candidate strategy.
+
+
+
+32. NO CAMBIOS AUTOMÁTICOS IRRESPONSABLES
+
+Aunque quiero aprendizaje autónomo:
+
+NO quiero que una pérdida individual modifique inmediatamente el sistema.
+
+Una nueva estrategia solamente podrá reemplazar una anterior después de:
+
+
+
+
+
+backtest
+
+
+
+validation
+
+
+
+out-of-sample
+
+
+
+robustness testing
+
+
+
+sufficient sample size
+
+
+
+comparison against baseline
+
+
+
+33. RISK MANAGEMENT
+
+Mantén un Risk Manager independiente.
+
+Debe controlar:
+
+
+
+
+
+risk per trade
+
+
+
+total exposure
+
+
+
+maximum simultaneous trades
+
+
+
+daily loss
+
+
+
+drawdown
+
+
+
+correlated exposure
+
+
+
+consecutive losses
+
+
+
+abnormal volatility
+
+
+
+API failure
+
+
+
+stale data
+
+
+
+execution failure
+
+
+
+spread explosion
+
+
+
+34. GLOBAL KILL SWITCH
+
+Mantener:
+
+Global Kill Switch
+
+Si ocurre una condición anormal:
+
+STOP NEW TRADES.
+
+Las posiciones existentes deberán seguir un protocolo previamente definido.
+
+
+
+35. PAPER TRADING
+
+Todo comenzará en:
+
+PAPER TRADING
+
+No money real.
+
+El sistema debe estar diseñado desde el principio para poder pasar posteriormente a live mediante configuración segura.
+
+
+
+36. ONE-WEEK EXPERIMENT
+
+Quiero dejarlo funcionando durante aproximadamente:
+
+7 días
+
+durante la primera fase experimental.
+
+Durante ese período:
+
+NO quiero que el sistema tenga como objetivo principal "ser perfecto".
+
+Quiero que:
+
+aprenda.
+
+Debe recolectar suficientes datos para comenzar a descubrir:
+
+
+
+
+
+winning patterns
+
+
+
+losing patterns
+
+
+
+strategy performance
+
+
+
+timeframe performance
+
+
+
+market regime performance
+
+
+
+confidence performance
+
+
+
+37. IMPORTANTE SOBRE LA SEMANA
+
+La semana será:
+
+an experimental learning period
+
+NO una prueba definitiva de rentabilidad.
+
+No quiero que el sistema se considere "listo para dinero real" solamente porque terminó la semana con ganancias.
+
+Debe seguir los criterios estadísticos definidos anteriormente.
+
+
+
+38. MACHINE LEARNING
+
+Mantén el enfoque:
+
+Baseline quantitative model primero.
+
+Después:
+
+
+
+
+
+Logistic Regression
+
+
+
+Random Forest
+
+
+
+XGBoost
+
+
+
+LightGBM
+
+
+
+clustering
+
+
+
+anomaly detection
+
+Y solamente después considerar:
+
+
+
+
+
+neural networks
+
+
+
+reinforcement learning
+
+si existe suficiente información para justificarlo.
+
+
+
+39. PROBABILITY MODEL
+
+Mantén:
+
+P(win | market conditions)
+
+pero con:
+
+
+
+
+
+calibration
+
+
+
+Brier score
+
+
+
+appropriate validation
+
+
+
+expected value
+
+No quiero probabilidades inventadas.
+
+
+
+40. FEATURE ENGINEERING
+
+Mantén las categorías:
+
+PRICE ACTION
+
+TECHNICAL
+
+VOLUME
+
+MARKET STRUCTURE
+
+VOLATILITY
+
+TIME
+
+MICROSTRUCTURE
+
+Y utiliza:
+
+feature importance
+
+ablation testing
+
+para determinar qué realmente agrega valor.
+
+
+
+41. DASHBOARD
+
+Mantén el dashboard con:
+
+
+
+
+
+equity
+
+
+
+P&L
+
+
+
+win rate
+
+
+
+expectancy
+
+
+
+profit factor
+
+
+
+drawdown
+
+
+
+active trades
+
+
+
+rejected signals
+
+
+
+market regime
+
+
+
+strategy performance
+
+
+
+confidence
+
+
+
+learning progress
+
+
+
+system status
+
+
+
+API status
+
+Agrega:
+
+Exploration / Exploitation ratio
+
+para saber cuánto está explorando vs explotando.
+
+
+
+42. LOGGING
+
+Mantén logging completo.
+
+Cada trade debe poder responder:
+
+¿Por qué entramos?
+
+¿Por qué salimos?
+
+¿Qué estrategia lo generó?
+
+¿Qué características existían?
+
+¿Qué confidence tenía?
+
+¿Qué market regime había?
+
+¿Cuál fue el resultado?
+
+¿Qué aprendimos?
+
+
+
+43. TECHNOLOGY
+
+Mantén la investigación sobre:
+
+Python
+Pandas / Polars
+NumPy
+scikit-learn
+XGBoost / LightGBM
+TA-Lib o alternativas
+PyTorch cuando sea necesario
+SQLite/PostgreSQL
+FastAPI si aporta valor
+Docker cuando aporte valor
+pytest
+Git
+
+No agregues dependencias innecesarias.
+
+
+
+44. ARCHITECTURE
+
+Mantén una arquitectura modular similar a:
+
+/trading_system
+
+/data
+/features
+/strategies
+/models
+/backtesting
+/execution
+/risk
+/learning
+/portfolio
+/database
+/dashboard
+/reports
+/config
+/tests
+
+Con separación entre:
+
+Market Data
+Feature Engineering
+Signal Generation
+Strategy Engine
+ML Model
+Risk Manager
+Position Sizing
+Execution Engine
+Portfolio Manager
+Learning Engine
+Backtesting Engine
+Reporting
+Dashboard
+
+
+
+45. TESTING
+
+Mantén:
+
+unit tests
+integration tests
+backtest tests
+risk tests
+execution simulation tests
+data validation tests
+
+Incluyendo protección contra:
+
+
+
+
+
+duplicate orders
+
+
+
+excessive position sizing
+
+
+
+stale data
+
+
+
+paper/live confusion
+
+
+
+risk limit violations
+
+
+
+accidental live execution
+
+
+
+46. SECURITY
+
+API keys:
+
+Nunca hardcodeadas.
+
+Utilizar:
+
+.env
+
+environment variables.
+
+Separar:
+
+PAPER
+
+LIVE.
+
+Live trading debe requerir activación explícita.
+
+
+
+47. LIVE TRADING
+
+NO activar live inicialmente.
+
+Roadmap:
+
+PHASE 1
+Research
+
+PHASE 2
+Architecture
+
+PHASE 3
+Backtesting
+
+PHASE 4
+Paper Trading
+
+PHASE 5
+Exploration + Learning
+
+PHASE 6
+Validation
+
+PHASE 7
+Small Live Deployment
+
+PHASE 8
+Scaling
+
+
+
+48. CRITERIOS PARA LIVE
+
+Determina criterios objetivos basados en:
+
+
+
+
+
+sufficient trades
+
+
+
+positive expectancy
+
+
+
+profit factor
+
+
+
+drawdown
+
+
+
+robustness
+
+
+
+out-of-sample performance
+
+
+
+execution quality
+
+
+
+stability
+
+
+
+market regime performance
+
+
+
+49. CREATIVIDAD
+
+Quiero que seas especialmente creativo.
+
+NO descartes una idea simplemente porque sea poco convencional.
+
+Puedes proponer:
+
+
+
+
+
+adaptive strategy selection
+
+
+
+dynamic timeframe selection
+
+
+
+regime-specific strategies
+
+
+
+ensemble models
+
+
+
+strategy portfolios
+
+
+
+confidence-adjusted position sizing
+
+
+
+exploration/exploitation algorithms
+
+
+
+Bayesian approaches
+
+
+
+contextual bandits
+
+
+
+adaptive thresholds
+
+
+
+online learning
+
+
+
+anomaly detection
+
+
+
+hybrid quantitative + ML systems
+
+Pero cada innovación debe probarse.
+
+
+
+50. OBJETIVO FINAL
+
+Quiero construir un sistema que evolucione aproximadamente así:
+
+START
+
+More exploration
+More reasonable trades
+More data collection
+
+↓
+
+LEARNING
+
+Identify winning patterns
+Identify losing patterns
+
+↓
+
+OPTIMIZATION
+
+Reduce recurring losing patterns
+Increase priority of winning patterns
+
+↓
+
+ADAPTATION
+
+Detect market regimes
+Select appropriate strategies
+
+↓
+
+EXPLOITATION
+
+Focus more heavily on proven advantages
+
+↓
+
+CONTINUOUS DISCOVERY
+
+Continue exploring new strategies and opportunities
+
+↓
+
+IMPROVEMENT
+
+New evidence → new hypotheses → new experiments → better strategies
+
+
+
+51. PRINCIPIO CENTRAL
+
+No quiero que el sistema sea:
+
+"perfect from day one."
+
+Quiero que sea:
+
+capable of becoming better through evidence.
+
+La fase inicial debe permitirle cometer errores pequeños y controlados, porque esos errores proporcionarán información útil para mejorar.
+
+Sin embargo, el sistema nunca debe poner en riesgo una cantidad desproporcionada del capital para "aprender".
+
+Quiero:
+
+maximum learning per unit of risk.
+
+
+
+52. INVESTIGACIÓN ANTES DEL CÓDIGO
+
+Mantén exactamente el proceso de investigación anterior.
+
+Investiga:
+
+
+
+
+
+Mejor mercado.
+
+
+
+Mejor broker/API.
+
+
+
+Mejores activos.
+
+
+
+Mejores timeframes.
+
+
+
+Estrategias iniciales.
+
+
+
+Indicadores.
+
+
+
+ML.
+
+
+
+Datos.
+
+
+
+Arquitectura.
+
+
+
+Costes.
+
+
+
+Riesgos.
+
+
+
+Infraestructura.
+
+Utiliza información actual.
+
+No inventes capacidades de APIs.
+
+
+
+53. MODO CURSOR
+
+Trabaja como coding agent.
+
+No escribas cientos de archivos inmediatamente.
+
+Trabaja por fases:
+
+
+
+
+
+Inspect
+
+
+
+Design
+
+
+
+Implement
+
+
+
+Test
+
+
+
+Review
+
+
+
+Fix
+
+
+
+Document
+
+
+
+Checkpoint
+
+
+
+Continue
+
+
+
+54. DOCUMENTACIÓN
+
+Mantén:
+
+README.md
+
+ARCHITECTURE.md
+
+TRADING_STRATEGY.md
+
+RISK_MANAGEMENT.md
+
+LEARNING_ENGINE.md
+
+BACKTESTING.md
+
+CONFIGURATION.md
+
+CHANGELOG.md
+
+EXPERIMENTS.md
+
+
+
+55. EXPERIMENT TRACKING
+
+Cada cambio importante será un experimento.
+
+Registrar:
+
+
+
+
+
+hypothesis
+
+
+
+dataset
+
+
+
+features
+
+
+
+parameters
+
+
+
+model
+
+
+
+training
+
+
+
+validation
+
+
+
+testing
+
+
+
+metrics
+
+
+
+conclusion
+

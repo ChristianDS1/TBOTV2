@@ -1,0 +1,84 @@
+mode: paper  # paper | live — live requires explicit activation
+
+capital:
+  initial: 100.0
+  currency: EUR
+  base_trade_size: 2.5
+  size_step_per_50_equity: 1.0
+
+risk:
+  max_simultaneous_positions: 5
+  risk_per_trade_pct: 2.0
+  soft_mode: true  # no daily-loss kill in paper
+  max_correlated_exposure: 3
+  stale_data_seconds: 120
+  kill_on_api_failure: true
+
+symbols:
+  crypto:
+    - BTC/USDT
+    - ETH/USDT
+  forex:
+    - EUR/USD
+    - GBP/USD
+
+timeframes:
+  primary: 1m
+  lookback_bars: 200
+
+strategy:
+  name: bb_mean_reversion
+  min_conditions: 3
+  bb_period: 20
+  bb_std: 2.0
+  rsi_period: 10
+  rsi_oversold: 30
+  rsi_overbought: 70
+  macd_fast: [5, 8, 9]
+  macd_slow: [13, 21, 9]
+  max_hold_minutes: 5
+  discovery_phase: true
+  entry_confidence_floor: 0  # do not block in discovery
+
+learning:
+  phase: discovery  # discovery | pattern | optimization | exploitation
+  exploration_budget: 0.25
+  min_sample_size: 20
+  pattern_min_occurrences: 20  # win AND loss — no confirm below this
+  win_confidence_boost: 8.0     # only effect for confirmed win patterns
+  loss_confidence_penalty: 15.0
+  loss_soft_reject: true        # soft-reject entries matching confirmed loss keys
+  retrain_every_n_trades: 50
+  recency_half_life_trades: 100
+
+capital_policy:
+  auto_refill: true
+  refill_to: 100.0  # top up when paper capital is exhausted
+
+forex_session:
+  # Approximate FX week in UTC — closed weekends
+  open_weekday: 0  # Monday
+  open_hour_utc: 0
+  close_weekday: 4  # Friday
+  close_hour_utc: 21
+  close_intraday_at_session_end: true
+
+execution:
+  fee_bps: 4.0
+  slippage_bps: 2.0
+  poll_interval_seconds: 5
+
+dashboard:
+  host: 127.0.0.1
+  port: 8000
+  refresh_seconds: 5
+
+database:
+  path: data/trading.db
+
+crypto:
+  exchange: binance
+  sandbox: false  # public OHLCV; paper fills are internal
+
+forex:
+  provider: yfinance  # pluggable OHLCV feed for paper

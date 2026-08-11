@@ -1,0 +1,273 @@
+"""Learning engine: ranking, exploration, pattern evidence (>=20), confidence effects."""
+
+from __future__ import annotations
+
+import math
+from datetime import datetime, timezone
+from typing import Any
+
+import numpy as np
+
+from trading_system.config import LearningConfig
+from trading_system.database import Database
+from trading_system.types import Position, Signal
+
+
+class StrategyRanker:
+    def __init__(self, cfg: LearningConfig, db: Database) -> None:
+        self.cfg = cfg
+        self.db = db
+
+    def update_from_trades(self, trades: list[Position]) -> list[dict[str, Any]]:
+        by_strat: dict[str, list[Position]] = {}
+        for t in trades:
+            by_strat.setdefault(t.strategy, []).append(t)
+
+        results = []
+        for name, items in by_strat.items():
+            pnls = [t.pnl or 0.0 for t in items]
+            wins = [p for p in pnls if p > 0]
+            losses = [p for p in pnls if p <= 0]
+            n = len(pnls)
+            wr = len(wins) / n if n else 0
+            exp = sum(pnls) / n if n else 0
+            gw = sum(wins) if wins else 0
+            gl = abs(sum(losses)) if losses else 0
+            pf = gw / gl if gl > 0 else (999 if gw > 0 else 0)
+
+            weights = self._recency_weights(n)
+            w_exp = float(np.average(pnls, weights=weights)) if n else 0
+
+            conf_penalty = 1 / math.sqrt(max(n, 1))
+            rank = w_exp * (1 - 0.5 * conf_penalty) + 0.1 * (wr - 0.5)
+
+            status = "active"
+            if n >= self.cfg.min_sample_size and exp < 0 and pf < 1:
+                status = "exploration-only"
+            if n >= self.cfg.min_sample_size * 2 and exp < -0.05:
+                status = "reduced"
+
+            stats = {
+                "strategy": name,
+                "trades": n,
+                "wins": len(wins),
+                "losses": len(losses),
+                "total_pnl": sum(pnls),
+                "expectancy": exp,
+                "profit_factor": pf,
+                "rank_score": rank,
+                "status": status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self.db.upsert_strategy_stats(stats)
+            results.append(stats)
+        return results
+
+    def _recency_weights(self, n: int) -> np.ndarray:
+        half = max(self.cfg.recency_half_life_trades, 1)
+        idx = np.arange(n)
+        age = (n - 1 - idx).astype(float)
+        return np.power(0.5, age / half)
+
+
+def confidence_bucket(confidence: float) -> str:
+    c = max(0, min(100, confidence))
+    lo = int(c // 5) * 5
+    return f"{lo}-{lo + 5}"
+
+
+def pattern_keys_from_trade(pos: Position) -> list[str]:
+    keys = [
+        f"regime={pos.regime}",
+        f"symbol={pos.symbol}",
+        f"exit_reason={pos.exit_reason or 'unknown'}",
+        f"confidence_bucket={confidence_bucket(pos.confidence)}",
+        f"strategy={pos.strategy}",
+        f"regime={pos.regime}|exit={pos.exit_reason or 'unknown'}",
+    ]
+    return keys
+
+
+def signal_pattern_keys(signal: Signal) -> list[str]:
+    return [
+        f"regime={signal.regime.value}",
+        f"symbol={signal.symbol}",
+        f"confidence_bucket={confidence_bucket(signal.confidence)}",
+        f"strategy={signal.strategy}",
+    ]
+
+
+class LearningEngine:
+    def __init__(self, cfg: LearningConfig, db: Database) -> None:
+        self.cfg = cfg
+        self.db = db
+        self.ranker = StrategyRanker(cfg, db)
+        self._trades_since_retrain = 0
+        self.exploration_count = 0
+        self.exploitation_count = 0
+
+    @property
+    def exploration_ratio(self) -> float:
+        total = self.exploration_count + self.exploitation_count
+        if total == 0:
+            return self.cfg.exploration_budget
+        return self.exploration_count / total
+
+    def on_trade_closed(self, pos: Position) -> list[dict[str, Any]]:
+        """Record evidence; confirm patterns only at >= pattern_min_occurrences."""
+        self._trades_since_retrain += 1
+        closed = self.db.get_all_closed()
+        self.ranker.update_from_trades(closed)
+
+        won = (pos.pnl or 0) > 0
+        direction = "win" if won else "loss"
+        now = datetime.now(timezone.utc).isoformat()
+        threshold = self.cfg.pattern_min_occurrences
+        newly_confirmed: list[dict[str, Any]] = []
+
+        # Observation log only — not a confirmed pattern
+        self.db.insert_insight(
+            "trade_observation",
+            (
+                f"{'WIN' if won else 'LOSS'} {pos.strategy} {pos.symbol} "
+                f"regime={pos.regime} conf={pos.confidence:.1f} pnl={pos.pnl:.4f} "
+                f"exit={pos.exit_reason}"
+            ),
+            {"trade_id": pos.id, "direction": direction},
+        )
+
+        for key in pattern_keys_from_trade(pos):
+            ev = self.db.increment_pattern(key, direction, now)
+            count = int(ev["count"])
+            status = ev["status"]
+
+            if count < threshold:
+                # Still observing — never apply changes
+                continue
+
+            if status != "confirmed":
+                self.db.confirm_pattern(key, direction)
+                action_info = self._apply_confirmed_effect(key, direction)
+                newly_confirmed.append({**ev, "status": "confirmed", **action_info})
+                self.db.insert_insight(
+                    "confirmed_pattern",
+                    (
+                        f"CONFIRMED {direction} pattern '{key}' after {count} occurrences "
+                        f"(threshold={threshold}). Effect: {action_info['action']}"
+                    ),
+                    {
+                        "pattern_key": key,
+                        "direction": direction,
+                        "count": count,
+                        "action": action_info["action"],
+                    },
+                )
+
+        if self._trades_since_retrain >= self.cfg.retrain_every_n_trades:
+            self._trades_since_retrain = 0
+            self.db.insert_insight(
+                "retrain",
+                f"Retrain trigger after {self.cfg.retrain_every_n_trades} closed trades",
+                {"phase": self.cfg.phase},
+            )
+        return newly_confirmed
+
+    def _apply_confirmed_effect(self, pattern_key: str, direction: str) -> dict[str, str]:
+        """
+        Win: confidence boost ONLY — do not alter strategy/pattern rules.
+        Loss: confidence penalty and optional soft-reject flag.
+        """
+        if direction == "win":
+            action = "confidence_boost"
+            detail = (
+                f"Win pattern confirmed. Boost confidence by "
+                f"+{self.cfg.win_confidence_boost} when signal matches '{pattern_key}'. "
+                f"Strategy entry rules unchanged."
+            )
+        else:
+            if self.cfg.loss_soft_reject:
+                action = "soft_reject"
+                detail = (
+                    f"Loss pattern confirmed. Soft-reject (and "
+                    f"-{self.cfg.loss_confidence_penalty} conf) when signal matches "
+                    f"'{pattern_key}'. Base strategy unchanged."
+                )
+            else:
+                action = "confidence_penalty"
+                detail = (
+                    f"Loss pattern confirmed. Penalize confidence by "
+                    f"-{self.cfg.loss_confidence_penalty} when signal matches "
+                    f"'{pattern_key}'. Base strategy unchanged."
+                )
+        self.db.insert_applied_change(pattern_key, direction, action, detail)
+        return {"action": action, "detail": detail}
+
+    def apply_confidence_effects(self, signal: Signal) -> tuple[Signal, str | None]:
+        """
+        Adjust signal confidence from confirmed patterns.
+        Returns (signal, soft_reject_reason|None).
+        Win patterns: boost only. Loss patterns: penalty and optional soft-reject.
+        """
+        keys = set(signal_pattern_keys(signal))
+        # Also match regime|exit style only on regime part for live signals
+        keys.add(f"regime={signal.regime.value}")
+
+        confirmed_wins = {
+            p["pattern_key"]
+            for p in self.db.get_patterns(direction="win", status="confirmed")
+        }
+        confirmed_losses = {
+            p["pattern_key"]
+            for p in self.db.get_patterns(direction="loss", status="confirmed")
+        }
+
+        boost = 0.0
+        penalty = 0.0
+        reject_reason: str | None = None
+
+        for k in keys:
+            if k in confirmed_wins:
+                boost = max(boost, self.cfg.win_confidence_boost)
+            if k in confirmed_losses:
+                penalty = max(penalty, self.cfg.loss_confidence_penalty)
+                if self.cfg.loss_soft_reject:
+                    reject_reason = f"confirmed_loss_pattern:{k}"
+
+        signal.confidence = max(0.0, min(100.0, signal.confidence + boost - penalty))
+        signal.features["pattern_boost"] = boost
+        signal.features["pattern_penalty"] = penalty
+        return signal, reject_reason
+
+    def should_explore(self) -> bool:
+        import random
+
+        return random.random() < self.cfg.exploration_budget
+
+    def tag_signal(self, signal: Signal) -> Signal:
+        explore = self.should_explore() or self.cfg.phase == "discovery"
+        signal.exploration = explore
+        if explore:
+            self.exploration_count += 1
+        else:
+            self.exploitation_count += 1
+        return signal
+
+    def phase_progress(self, total_trades: int) -> dict[str, Any]:
+        phase = self.cfg.phase
+        if total_trades >= 200 and phase == "discovery":
+            phase = "pattern"
+        elif total_trades >= 500 and phase == "pattern":
+            phase = "optimization"
+        elif total_trades >= 1000 and phase == "optimization":
+            phase = "exploitation"
+        return {
+            "configured_phase": self.cfg.phase,
+            "suggested_phase": phase,
+            "total_trades": total_trades,
+            "exploration_ratio": self.exploration_ratio,
+            "exploration_budget": self.cfg.exploration_budget,
+            "pattern_min_occurrences": self.cfg.pattern_min_occurrences,
+            "confirmed_wins": len(self.db.get_patterns("win", "confirmed")),
+            "confirmed_losses": len(self.db.get_patterns("loss", "confirmed")),
+            "observing_patterns": len(self.db.get_patterns(status="observing")),
+        }

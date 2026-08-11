@@ -1,0 +1,344 @@
+"""Main trading engine loop."""
+
+from __future__ import annotations
+
+import logging
+import threading
+from datetime import datetime, timezone
+from typing import Any
+
+from trading_system.config import AppConfig, ROOT, load_config
+from trading_system.data.crypto import CryptoAdapter, SimulatedCryptoAdapter
+from trading_system.data.forex import ForexAdapter
+from trading_system.database import Database
+from trading_system.execution import PaperExecutor
+from trading_system.learning import LearningEngine
+from trading_system.models import WinProbabilityModel
+from trading_system.portfolio import Portfolio
+from trading_system.reports import maybe_rollover_daily_report, write_daily_report
+from trading_system.risk import RiskManager
+from trading_system.strategies import StrategyRegistry
+from trading_system.types import PortfolioSnapshot, RejectedSignal, Venue
+
+logger = logging.getLogger(__name__)
+
+
+class TradingEngine:
+    def __init__(self, cfg: AppConfig | None = None, simulate: bool = False) -> None:
+        self.cfg = cfg or load_config()
+        if self.cfg.is_live:
+            raise RuntimeError(
+                "LIVE mode blocked — set mode=paper. Live requires explicit future activation."
+            )
+
+        self.db = Database(self.cfg.db_path())
+        self.portfolio = Portfolio(self.db, self.cfg.capital.initial)
+        self.risk = RiskManager(self.cfg)
+        self.executor = PaperExecutor(self.cfg, self.db, self.portfolio)
+        self.learning = LearningEngine(self.cfg.learning, self.db)
+        self.model = WinProbabilityModel(ROOT / "models" / "artifacts")
+        self.strategies = StrategyRegistry()
+
+        self.simulate = simulate
+        if simulate:
+            self.crypto = SimulatedCryptoAdapter()
+        else:
+            try:
+                self.crypto = CryptoAdapter(
+                    self.cfg.crypto.exchange, sandbox=self.cfg.crypto.sandbox
+                )
+            except Exception as e:
+                logger.warning("CCXT init failed (%s); using simulated crypto", e)
+                self.crypto = SimulatedCryptoAdapter()
+
+        self.forex = ForexAdapter(self.cfg.forex_session, provider=self.cfg.forex.provider)
+
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._last_snapshot: PortfolioSnapshot | None = None
+        self._lock = threading.Lock()
+        self._cycle = 0
+        self.status_message = "initialized"
+        self._last_daily_report_path: str | None = None
+
+        # Initialize daily report day marker
+        if self.db.get_state("last_daily_report_day") is None:
+            self.db.set_state(
+                "last_daily_report_day",
+                datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            )
+
+    def start_background(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self.run_forever, name="trading-loop", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=10)
+
+    def run_forever(self) -> None:
+        interval = self.cfg.execution.poll_interval_seconds
+        logger.info("Engine started interval=%ss mode=%s", interval, self.cfg.mode)
+        while not self._stop.is_set():
+            try:
+                self.tick()
+                self.status_message = "running"
+            except Exception as e:
+                logger.exception("tick failed")
+                self.status_message = f"error:{e}"
+                if self.cfg.risk.kill_on_api_failure:
+                    self.risk.trip(f"tick_error:{e}")
+            self._stop.wait(interval)
+
+    def tick(self) -> PortfolioSnapshot:
+        with self._lock:
+            return self._tick_unlocked()
+
+    def _tick_unlocked(self) -> PortfolioSnapshot:
+        self._cycle += 1
+        self.risk.check_stale()
+
+        # Daily report rollover (UTC)
+        _, report_path = maybe_rollover_daily_report(
+            self.db, self.learning, self.db.get_state("last_daily_report_day")
+        )
+        if report_path is not None:
+            self._last_daily_report_path = str(report_path)
+            logger.info("Daily report written: %s", report_path)
+
+        mark_prices: dict[str, float] = {}
+        venue_health: dict[str, Any] = {}
+
+        # Refill before trying new entries if flat & broke
+        self.portfolio.maybe_refill(
+            auto_refill=self.cfg.capital_policy.auto_refill,
+            refill_to=self.cfg.capital_policy.refill_to or self.cfg.capital.initial,
+            min_trade_size=self.cfg.capital.base_trade_size,
+            mark_prices=mark_prices,
+        )
+
+        # --- Crypto ---
+        try:
+            for sym in self.cfg.symbols.crypto:
+                df = self.crypto.get_ohlcv(
+                    sym, self.cfg.timeframes.primary, self.cfg.timeframes.lookback_bars
+                )
+                mark_prices[sym] = float(df["close"].iloc[-1])
+                self._process_symbol(sym, Venue.CRYPTO, df)
+            self.risk.mark_data("crypto", True)
+            venue_health["crypto"] = self.crypto.health()
+        except Exception as e:
+            logger.exception("crypto cycle")
+            self.risk.mark_data("crypto", False)
+            venue_health["crypto"] = {"ok": False, "error": str(e)}
+
+        # --- Forex (session gated) ---
+        fx_open = self.forex.calendar.is_open()
+        try:
+            for sym in self.cfg.symbols.forex:
+                df = self.forex.get_ohlcv(
+                    sym, self.cfg.timeframes.primary, self.cfg.timeframes.lookback_bars
+                )
+                mark_prices[sym] = float(df["close"].iloc[-1])
+                if self.forex.is_tradable_now(sym):
+                    self._process_symbol(sym, Venue.FOREX, df)
+            self.risk.mark_data("forex", True)
+            venue_health["forex"] = self.forex.health()
+        except Exception as e:
+            logger.exception("forex cycle")
+            self.risk.mark_data("forex", False)
+            venue_health["forex"] = {"ok": False, "error": str(e)}
+
+        closed = self.executor.manage_open(
+            mark_prices,
+            forex_session_open=fx_open,
+            close_fx_at_session_end=self.cfg.forex_session.close_intraday_at_session_end,
+        )
+        for pos in closed:
+            self.learning.on_trade_closed(pos)
+
+        # After closes, refill if needed so learning never stalls
+        self.portfolio.maybe_refill(
+            auto_refill=self.cfg.capital_policy.auto_refill,
+            refill_to=self.cfg.capital_policy.refill_to or self.cfg.capital.initial,
+            min_trade_size=self.cfg.capital.base_trade_size,
+            mark_prices=mark_prices,
+        )
+
+        closed_all = self.db.get_all_closed()
+        if (
+            closed
+            and len(closed_all) >= 20
+            and len(closed_all) % self.cfg.learning.retrain_every_n_trades < len(closed)
+        ):
+            result = self.model.train(closed_all)
+            self.db.insert_insight("ml_train", str(result), result)
+
+        self.portfolio.snapshot_equity(mark_prices)
+        snap = self._build_snapshot(mark_prices, venue_health)
+        self._last_snapshot = snap
+        return snap
+
+    def _process_symbol(self, symbol: str, venue: Venue, df) -> None:
+        strategy = self.strategies.get(self.cfg.strategy.name)
+        signal = strategy.evaluate(symbol, venue, df, self.cfg.strategy)
+        if signal is None:
+            return
+
+        p_win = self.model.predict_proba(signal.features, signal.confidence)
+        signal.features["p_win"] = p_win
+        signal.confidence = 0.7 * signal.confidence + 0.3 * (p_win * 100)
+
+        # Confirmed patterns: win=boost only; loss=penalty/soft-reject
+        signal, reject_reason = self.learning.apply_confidence_effects(signal)
+        if reject_reason:
+            self.db.insert_rejected(
+                RejectedSignal(
+                    symbol=symbol,
+                    venue=venue,
+                    side=signal.side,
+                    strategy=signal.strategy,
+                    confidence=signal.confidence,
+                    reason=reject_reason,
+                    features=signal.features,
+                    regime=signal.regime,
+                    timestamp=datetime.now(timezone.utc),
+                )
+            )
+            return
+
+        signal = self.learning.tag_signal(signal)
+
+        decision = self.risk.approve(
+            signal,
+            equity=self.portfolio.equity({symbol: float(df["close"].iloc[-1])}),
+            open_positions=self.portfolio.open_positions(),
+            mode=self.cfg.mode,
+        )
+        if not decision.allowed:
+            self.db.insert_rejected(
+                RejectedSignal(
+                    symbol=symbol,
+                    venue=venue,
+                    side=signal.side,
+                    strategy=signal.strategy,
+                    confidence=signal.confidence,
+                    reason=decision.reason,
+                    features=signal.features,
+                    regime=signal.regime,
+                    timestamp=datetime.now(timezone.utc),
+                )
+            )
+            return
+
+        # Ensure cash can cover size (refill may have just run)
+        if self.portfolio.cash < decision.size:
+            self.portfolio.maybe_refill(
+                auto_refill=self.cfg.capital_policy.auto_refill,
+                refill_to=self.cfg.capital_policy.refill_to or self.cfg.capital.initial,
+                min_trade_size=self.cfg.capital.base_trade_size,
+                mark_prices={symbol: float(df["close"].iloc[-1])},
+            )
+            if self.portfolio.cash < decision.size:
+                self.db.insert_rejected(
+                    RejectedSignal(
+                        symbol=symbol,
+                        venue=venue,
+                        side=signal.side,
+                        strategy=signal.strategy,
+                        confidence=signal.confidence,
+                        reason="insufficient_cash",
+                        features=signal.features,
+                        regime=signal.regime,
+                        timestamp=datetime.now(timezone.utc),
+                    )
+                )
+                return
+
+        price = float(df["close"].iloc[-1])
+        self.executor.open_trade(signal, decision.size, price)
+
+    def _build_snapshot(
+        self, mark_prices: dict[str, float], venue_health: dict[str, Any]
+    ) -> PortfolioSnapshot:
+        m = self.portfolio.metrics()
+        progress = self.learning.phase_progress(m["total_trades"])
+        return PortfolioSnapshot(
+            equity=self.portfolio.equity(mark_prices),
+            cash=self.portfolio.cash,
+            open_positions=len(self.portfolio.open_positions()),
+            realized_pnl=self.portfolio.realized_pnl(),
+            unrealized_pnl=self.portfolio.unrealized_pnl(mark_prices),
+            win_rate=m["win_rate"],
+            expectancy=m["expectancy"],
+            profit_factor=m["profit_factor"],
+            drawdown=m["drawdown"],
+            total_trades=m["total_trades"],
+            exploration_ratio=self.learning.exploration_ratio,
+            learning_phase=progress["suggested_phase"],
+            kill_switch=self.risk.kill_switch,
+            venues=venue_health,
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    def force_daily_report(self, day: str | None = None) -> str:
+        path = write_daily_report(self.db, learning=self.learning, day=day)
+        self._last_daily_report_path = str(path)
+        return str(path)
+
+    def get_monitor_payload(self) -> dict[str, Any]:
+        snap = self._last_snapshot
+        if snap is None:
+            try:
+                snap = self.tick()
+            except Exception as e:
+                return {"error": str(e), "status": self.status_message}
+
+        open_pos = [p.model_dump(mode="json") for p in self.portfolio.open_positions()]
+        closed = [p.model_dump(mode="json") for p in self.db.get_closed_trades(30)]
+        rejected = self.db.recent_rejected(20)
+        insights = self.db.recent_insights(15)
+        rankings = self.db.get_strategy_stats()
+        latest_report = self.db.latest_daily_report()
+        patterns_win = self.db.get_patterns("win")
+        patterns_loss = self.db.get_patterns("loss")
+        return {
+            "snapshot": snap.model_dump(mode="json"),
+            "open_trades": open_pos,
+            "closed_trades": closed,
+            "rejected_signals": rejected,
+            "insights": insights,
+            "strategy_rankings": rankings,
+            "model": {
+                "backend": self.model.backend,
+                "brier": self.model.brier,
+            },
+            "status": self.status_message,
+            "kill_reason": self.risk.kill_reason,
+            "cycle": self._cycle,
+            "mode": self.cfg.mode,
+            "learning": self.learning.phase_progress(snap.total_trades if snap else 0),
+            "capital_resets": self.portfolio.capital_resets(),
+            "daily_report": latest_report,
+            "patterns": {
+                "wins": patterns_win[:10],
+                "losses": patterns_loss[:10],
+                "threshold": self.cfg.learning.pattern_min_occurrences,
+            },
+        }
+
+
+_ENGINE: TradingEngine | None = None
+
+
+def get_engine(simulate: bool = False) -> TradingEngine:
+    global _ENGINE
+    if _ENGINE is None:
+        _ENGINE = TradingEngine(simulate=simulate)
+    return _ENGINE
