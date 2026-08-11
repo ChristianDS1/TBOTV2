@@ -318,7 +318,6 @@ class LearningEngine:
         Win patterns: boost only. Loss patterns: penalty and optional soft-reject.
         """
         keys = set(signal_pattern_keys(signal))
-        # Also match regime|exit style only on regime part for live signals
         keys.add(f"regime={signal.regime.value}")
 
         confirmed_wins = {
@@ -329,6 +328,10 @@ class LearningEngine:
             p["pattern_key"]
             for p in self.db.get_patterns(direction="loss", status="confirmed")
         }
+        exclude_prefixes = list(self.cfg.soft_reject_exclude_key_prefixes or [])
+
+        def _soft_reject_excluded(key: str) -> bool:
+            return any(key.startswith(p) for p in exclude_prefixes)
 
         boost = 0.0
         penalty = 0.0
@@ -339,8 +342,15 @@ class LearningEngine:
                 boost = max(boost, self.cfg.win_confidence_boost)
             if k in confirmed_losses:
                 penalty = max(penalty, self.cfg.loss_confidence_penalty)
-                if self.cfg.loss_soft_reject:
-                    reject_reason = f"confirmed_loss_pattern:{k}"
+                if not self.cfg.loss_soft_reject:
+                    continue
+                if _soft_reject_excluded(k):
+                    # Too broad (e.g. strategy=...) — never halt the whole bot
+                    continue
+                if k in confirmed_wins:
+                    # Ambiguous key confirmed both ways — do not soft-reject
+                    continue
+                reject_reason = f"confirmed_loss_pattern:{k}"
 
         signal.confidence = max(0.0, min(100.0, signal.confidence + boost - penalty))
         signal.features["pattern_boost"] = boost

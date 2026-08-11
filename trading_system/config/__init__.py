@@ -54,6 +54,9 @@ class LearningConfig(BaseModel):
     win_confidence_boost: float = 8.0
     loss_confidence_penalty: float = 15.0
     loss_soft_reject: bool = True
+    soft_reject_exclude_key_prefixes: list[str] = Field(
+        default_factory=lambda: ["strategy="]
+    )
     retrain_every_n_trades: int = 50
     recency_half_life_trades: int = 100
 
@@ -75,8 +78,8 @@ class ExecutionConfig(BaseModel):
     fee_bps: float = 4.0
     slippage_bps: float = 2.0
     poll_interval_seconds: int = 5
-    hard_min_edge_multiple: float = 0.75
-    soft_min_edge_multiple: float = 1.25
+    hard_min_edge_multiple: float = 0.5
+    soft_min_edge_multiple: float = 1.15
     soft_edge_confidence_penalty: float = 8.0
     tp_require_non_negative_net: bool = True
 

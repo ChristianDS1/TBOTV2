@@ -578,3 +578,58 @@ def test_tp_deferred_when_net_negative(cfg, tmp_db):
     )
     assert closed == []
     assert len(port.open_positions()) == 1
+
+
+def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):
+    cfg.learning.loss_soft_reject = True
+    cfg.learning.soft_reject_exclude_key_prefixes = ["strategy="]
+    le = LearningEngine(cfg.learning, tmp_db)
+    # Confirm broad strategy loss key (the bug that halted trading)
+    now = datetime.now(timezone.utc).isoformat()
+    for _ in range(20):
+        tmp_db.increment_pattern("strategy=bb_mean_reversion", "loss", now)
+    tmp_db.confirm_pattern(
+        "strategy=bb_mean_reversion",
+        "loss",
+        confirmed_count=20,
+        decision_reason="test",
+        effect_action="soft_reject",
+    )
+    # Also a specific loss that SHOULD still soft-reject
+    for _ in range(20):
+        tmp_db.increment_pattern("regime=breakout", "loss", now)
+    tmp_db.confirm_pattern(
+        "regime=breakout",
+        "loss",
+        confirmed_count=20,
+        decision_reason="test",
+        effect_action="soft_reject",
+    )
+
+    sig_ok = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        timestamp=datetime.now(timezone.utc),
+        regime=MarketRegime.RANGING,
+    )
+    adjusted, reject = le.apply_confidence_effects(sig_ok)
+    assert reject is None  # strategy= excluded
+    assert adjusted.confidence < 70  # penalty may still apply
+
+    sig_bad = Signal(
+        symbol="ETH/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.PUT,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        timestamp=datetime.now(timezone.utc),
+        regime=MarketRegime.BREAKOUT,
+    )
+    _, reject2 = le.apply_confidence_effects(sig_bad)
+    assert reject2 is not None
+    assert "regime=breakout" in reject2

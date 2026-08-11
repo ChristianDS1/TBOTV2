@@ -48,6 +48,10 @@ learning:
   win_confidence_boost: 8.0     # only effect for confirmed win patterns
   loss_confidence_penalty: 15.0
   loss_soft_reject: true        # soft-reject entries matching confirmed loss keys
+  # Keys starting with these NEVER soft-reject (too broad — would halt the whole strategy).
+  # Rollback: set to [] to restore old behavior that rejected on strategy=...
+  soft_reject_exclude_key_prefixes:
+    - "strategy="
   retrain_every_n_trades: 50
   recency_half_life_trades: 100
 
@@ -69,8 +73,8 @@ execution:
   poll_interval_seconds: 5
   # Fee-aware edge (does NOT wipe learned patterns — forward-looking only)
   # Soft discovery defaults: only block near-hopeless edges; keep trade flow.
-  hard_min_edge_multiple: 0.75  # was 1.0 — too strict on 1m compression
-  soft_min_edge_multiple: 1.25  # was 1.5 — thinner soft band
+  hard_min_edge_multiple: 0.5   # discovery: was 0.75; rollback to 0.75 if too loose
+  soft_min_edge_multiple: 1.15  # was 1.25
   soft_edge_confidence_penalty: 8.0
   tp_require_non_negative_net: true  # hit BB mid but wait if fees would make net < 0
 
