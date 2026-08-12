@@ -40,6 +40,9 @@ class StrategyConfig(BaseModel):
     tp_band_fraction: float = 0.25
     tp_min_bps: float = 12.0
     tp_fixed_bps: float = 15.0
+    # SL: rr_from_tp → net R:R 1:tp_rr_multiple (fees on both); band → legacy band/min
+    sl_mode: str = "rr_from_tp"
+    tp_rr_multiple: float = 1.5  # TP_net / SL_net (1:1.5 → multiple 1.5)
     sl_band_fraction: float = 0.12
     sl_min_bps: float = 10.0
     sl_include_exit_fees: bool = True

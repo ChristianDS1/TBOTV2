@@ -194,12 +194,16 @@ class TradingEngine:
 
         price = float(df["close"].iloc[-1])
 
-        # Stop-loss price: reserve exit fees inside the configured net-loss budget
-        if signal.stop_loss is not None and getattr(
-            self.cfg.strategy, "sl_include_exit_fees", True
+        # Recompute SL with exit-fee awareness (rr_from_tp uses TP; band uses BB width)
+        if signal.stop_loss is not None and (
+            getattr(self.cfg.strategy, "sl_include_exit_fees", True)
+            or (getattr(self.cfg.strategy, "sl_mode", "rr_from_tp") or "").lower()
+            == "rr_from_tp"
         ):
             exit_fee_bps = (
                 self.cfg.execution.fee_bps + self.cfg.execution.slippage_bps
+                if getattr(self.cfg.strategy, "sl_include_exit_fees", True)
+                else 0.0
             )
             bb_lo = signal.features.get("bb_lower")
             bb_hi = signal.features.get("bb_upper")
@@ -211,13 +215,22 @@ class TradingEngine:
                     bb_upper=float(bb_hi),
                     cfg=self.cfg.strategy,
                     exit_fee_bps=float(exit_fee_bps),
+                    take_profit=signal.take_profit,
                 )
                 signal.stop_loss = sl
                 signal.features["stop_loss"] = sl
                 signal.features["sl_budget_bps"] = budget_bps
                 signal.features["sl_trigger_bps"] = trigger_bps
                 signal.features["sl_exit_fee_bps"] = float(exit_fee_bps)
-                signal.features["sl_include_exit_fees"] = True
+                signal.features["sl_include_exit_fees"] = bool(
+                    getattr(self.cfg.strategy, "sl_include_exit_fees", True)
+                )
+                signal.features["sl_mode"] = getattr(
+                    self.cfg.strategy, "sl_mode", "rr_from_tp"
+                )
+                signal.features["tp_rr_multiple"] = float(
+                    getattr(self.cfg.strategy, "tp_rr_multiple", 1.5)
+                )
 
         # Soft fee-aware edge: hard-reject only suicide setups; thin edge still enters
         edge = assess_entry_edge(

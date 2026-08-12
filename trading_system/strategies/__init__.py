@@ -77,6 +77,39 @@ def compute_early_rejection_tp(
     return price - max(move, min_move * 0.5)
 
 
+def compute_sl_from_tp_rr(
+    *,
+    side: Side,
+    price: float,
+    take_profit: float,
+    exit_fee_bps: float = 0.0,
+    reward_multiple: float = 1.5,
+) -> tuple[float, float, float, float]:
+    """
+    SL sized so NET reward:risk = reward_multiple : 1 (default 1.5:1).
+
+    Fees on both sides (exit fee, matching close PnL):
+      TP_net = tp_move_bps - exit_fee_bps
+      SL_net = TP_net / reward_multiple
+      trigger_bps = max(1, SL_net - exit_fee_bps)
+
+    Returns (stop_price, sl_budget_bps=SL_net, trigger_bps, tp_net_bps).
+    """
+    if price <= 0 or take_profit is None:
+        raise ValueError("price and take_profit required for rr_from_tp SL")
+    fee = max(0.0, float(exit_fee_bps))
+    mult = max(0.1, float(reward_multiple))
+    tp_move_bps = abs(float(take_profit) - price) / price * 10_000.0
+    # Floor so a tiny TP still yields a usable stop
+    tp_net_bps = max(0.5, tp_move_bps - fee)
+    sl_net_bps = tp_net_bps / mult
+    trigger_bps = max(1.0, sl_net_bps - fee) if fee > 0 else max(1.0, sl_net_bps)
+    move = price * trigger_bps / 10_000.0
+    if side == Side.CALL:
+        return price - move, sl_net_bps, trigger_bps, tp_net_bps
+    return price + move, sl_net_bps, trigger_bps, tp_net_bps
+
+
 def compute_tight_stop_loss(
     *,
     side: Side,
@@ -85,15 +118,27 @@ def compute_tight_stop_loss(
     bb_upper: float,
     cfg: StrategyConfig,
     exit_fee_bps: float = 0.0,
+    take_profit: float | None = None,
 ) -> tuple[float, float, float]:
     """
-    Tight stop. Returns (stop_price, budget_bps, trigger_bps).
+    Stop loss. Returns (stop_price, budget_bps, trigger_bps).
 
-    budget_bps = configured max loss in bps of price (band/min).
-    If sl_include_exit_fees: trigger price is pulled closer so that
-    adverse_move_bps + exit_fee_bps ≈ budget_bps (matches close PnL which
-    subtracts exit fee). Take-profit is NOT adjusted.
+    sl_mode=rr_from_tp (default): derive SL from TP so net R:R = 1:tp_rr_multiple
+    with exit fees on both legs. Legacy sl_mode=band uses band/min budget.
     """
+    mode = (getattr(cfg, "sl_mode", "rr_from_tp") or "rr_from_tp").lower()
+    if mode == "rr_from_tp" and take_profit is not None:
+        sl, budget_bps, trigger_bps, _tp_net = compute_sl_from_tp_rr(
+            side=side,
+            price=price,
+            take_profit=float(take_profit),
+            exit_fee_bps=float(exit_fee_bps)
+            if getattr(cfg, "sl_include_exit_fees", True)
+            else 0.0,
+            reward_multiple=float(getattr(cfg, "tp_rr_multiple", 1.5)),
+        )
+        return sl, budget_bps, trigger_bps
+
     width = max(0.0, bb_upper - bb_lower)
     min_move = price * float(cfg.sl_min_bps) / 10_000.0
     budget_move = max(width * float(cfg.sl_band_fraction), min_move)
@@ -101,7 +146,6 @@ def compute_tight_stop_loss(
 
     trigger_bps = budget_bps
     if getattr(cfg, "sl_include_exit_fees", True) and exit_fee_bps > 0:
-        # Keep at least 1 bps of price room so SL can still fire
         trigger_bps = max(1.0, budget_bps - float(exit_fee_bps))
     move = price * trigger_bps / 10_000.0
 
@@ -256,9 +300,12 @@ class BBMeanReversionStrategy(Strategy):
             bb_upper=upper,
             cfg=cfg,
             exit_fee_bps=0.0,  # engine applies exit-fee reserve when enabled
+            take_profit=tp,
         )
         features["tp_mode"] = cfg.tp_mode
         features["tp_band_fraction"] = float(cfg.tp_band_fraction)
+        features["sl_mode"] = getattr(cfg, "sl_mode", "rr_from_tp")
+        features["tp_rr_multiple"] = float(getattr(cfg, "tp_rr_multiple", 1.5))
         features["sl_band_fraction"] = float(cfg.sl_band_fraction)
         features["sl_budget_bps"] = sl_budget_bps
         features["sl_trigger_bps"] = sl_trigger_bps

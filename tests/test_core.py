@@ -682,6 +682,7 @@ def test_near_extreme_and_rejection_required(cfg):
     from trading_system.strategies import (
         _near_extreme,
         compute_early_rejection_tp,
+        compute_sl_from_tp_rr,
         compute_tight_stop_loss,
     )
     from trading_system.types import Side
@@ -702,7 +703,7 @@ def test_near_extreme_and_rejection_required(cfg):
     row["close"] = 103.0
     assert _near_extreme(row, Side.PUT, 0.35) is False
 
-    # TP is early rejection — short of BB mid; SL is tight adverse cut
+    # TP is early rejection — short of BB mid; SL from TP at 1:1.5 net
     tp_call = compute_early_rejection_tp(
         side=Side.CALL,
         price=100.5,
@@ -711,18 +712,17 @@ def test_near_extreme_and_rejection_required(cfg):
         bb_upper=110.0,
         cfg=cfg.strategy,
     )
-    sl_call, budget_c, trigger_c = compute_tight_stop_loss(
+    sl_call, budget_c, trigger_c, tp_net_c = compute_sl_from_tp_rr(
         side=Side.CALL,
         price=100.5,
-        bb_lower=100.0,
-        bb_upper=110.0,
-        cfg=cfg.strategy,
+        take_profit=tp_call,
         exit_fee_bps=6.0,
+        reward_multiple=1.5,
     )
     assert tp_call > 100.5
     assert tp_call < 105.0
     assert sl_call < 100.5
-    assert trigger_c < budget_c  # fees reserved inside budget
+    assert abs(tp_net_c / budget_c - 1.5) < 1e-6
     assert abs(budget_c - (trigger_c + 6.0)) < 1e-6 or trigger_c == 1.0
 
     tp_put = compute_early_rejection_tp(
@@ -733,19 +733,31 @@ def test_near_extreme_and_rejection_required(cfg):
         bb_upper=110.0,
         cfg=cfg.strategy,
     )
-    sl_put, budget_p, trigger_p = compute_tight_stop_loss(
+    sl_put, budget_p, trigger_p, tp_net_p = compute_sl_from_tp_rr(
         side=Side.PUT,
         price=109.5,
+        take_profit=tp_put,
+        exit_fee_bps=6.0,
+        reward_multiple=1.5,
+    )
+    assert tp_put < 109.5
+    assert tp_put > 105.0
+    assert sl_put > 109.5
+    assert abs(tp_net_p / budget_p - 1.5) < 1e-6
+
+    # Legacy band mode still fee-reserves inside fixed budget
+    cfg.strategy.sl_mode = "band"
+    sl_band, budget_b, trigger_b = compute_tight_stop_loss(
+        side=Side.CALL,
+        price=100.5,
         bb_lower=100.0,
         bb_upper=110.0,
         cfg=cfg.strategy,
         exit_fee_bps=6.0,
     )
-    assert tp_put < 109.5
-    assert tp_put > 105.0
-    assert sl_put > 109.5
-    assert trigger_p <= budget_p
-
+    assert trigger_b < budget_b
+    assert abs(budget_b - (trigger_b + 6.0)) < 1e-6 or trigger_b == 1.0
+    cfg.strategy.sl_mode = "rr_from_tp"
 
 def test_stop_loss_cuts_before_large_adverse(cfg, tmp_db):
     from trading_system.execution import PaperExecutor

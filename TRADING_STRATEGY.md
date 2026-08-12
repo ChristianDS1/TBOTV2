@@ -21,8 +21,9 @@ Enter when ≥ `min_conditions` (default 3) **and**:
 
 **Take profit / stop:**
 - TP unchanged: `tp_band_fraction` 0.25 / `tp_min_bps` 12 — early rejection target short of mid; also used for fee-edge entry checks
-- SL new: `sl_band_fraction` 0.12 / `sl_min_bps` 10 — tight cut; exits as `stop_loss` before time_stop balloons the loss
-- `sl_include_exit_fees: true` — configured SL budget is **max NET loss** (price move + exit fee); TP unchanged
+- SL default `sl_mode: rr_from_tp` — net reward:risk **1 : `tp_rr_multiple`** (default 1.5). Exit fees deducted from TP net and added into SL budget so both legs are fee-aware
+- Legacy `sl_mode: band` uses `sl_band_fraction` / `sl_min_bps`
+- `sl_include_exit_fees: true` — fee reserve on both TP/SL net for RR sizing; net budget used at manage-open
 
 **Hold window (adaptive):** pattern priority is the first minutes (`preferred_hold_minutes`, default 3). After that the bot extends toward `max_hold_minutes` (10) only if price is still progressing toward TP / in favor; otherwise time-stops early. Hard cap always at 10.
 
