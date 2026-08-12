@@ -14,7 +14,9 @@
 | `strategy.max_extreme_retrace_pct` | Max distance from extreme toward mid (fraction of band width) |
 | `strategy.tp_mode` | `band_fraction` (default) or `fixed_bps` — never BB mid |
 | `strategy.tp_band_fraction` | Early rejection TP as fraction of band width (default 0.25) |
-| `strategy.tp_min_bps` | Minimum TP distance in bps |
+| `strategy.tp_min_bps` | Minimum TP distance in bps (default 12; also feeds fee-edge check) |
+| `strategy.sl_band_fraction` | Stop as fraction of band width (default 0.12) |
+| `strategy.sl_min_bps` | Minimum stop distance in bps (default 10) |
 | `strategy.min_hold_minutes` | Minimum hold floor (default 1) |
 | `strategy.preferred_hold_minutes` | Primary early-rejection window (default 3); after this, bot decides extend vs time-stop |
 | `strategy.max_hold_minutes` | Hard time-stop cap (default 10) |

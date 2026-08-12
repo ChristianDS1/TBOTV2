@@ -32,11 +32,13 @@ strategy:
   require_rejection_candle: true  # rejection_bull/bear hard gate (still counts toward 3/5)
   # Max retrace from extreme toward mid before entry is "too late" (fraction of band width)
   max_extreme_retrace_pct: 0.35
-  # TP = early rejection move (NOT BB mid). Fraction of band width from entry toward mid.
+  # TP = early rejection move (NOT BB mid). Used for exits + fee edge check at entry.
   tp_mode: band_fraction
   tp_band_fraction: 0.25
-  # Floor so tiny FX bands still aim for a tradeable early scalp (bps of price)
   tp_min_bps: 12.0
+  # Tight stop — cut losers before time_stop balloons the loss
+  sl_band_fraction: 0.12
+  sl_min_bps: 10.0
   bb_period: 20
   bb_std: 2.0
   rsi_period: 10

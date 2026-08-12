@@ -55,7 +55,7 @@ def compute_early_rejection_tp(
     """
     Short TP for early rejection scalp — NEVER BB mid.
     Default: move = max(tp_band_fraction * band_width, tp_min_bps of price) toward mid,
-    then clamp so TP stays short of the midline.
+    then clamp so TP stays short of the midline. Also used for fee-edge checks at entry.
     """
     width = max(0.0, bb_upper - bb_lower)
     min_move = price * float(cfg.tp_min_bps) / 10_000.0
@@ -75,6 +75,23 @@ def compute_early_rejection_tp(
     if room > 0:
         move = min(move, room * 0.85)
     return price - max(move, min_move * 0.5)
+
+
+def compute_tight_stop_loss(
+    *,
+    side: Side,
+    price: float,
+    bb_lower: float,
+    bb_upper: float,
+    cfg: StrategyConfig,
+) -> float:
+    """Tight stop to cut losers before time_stop balloons the loss."""
+    width = max(0.0, bb_upper - bb_lower)
+    min_move = price * float(cfg.sl_min_bps) / 10_000.0
+    move = max(width * float(cfg.sl_band_fraction), min_move)
+    if side == Side.CALL:
+        return price - move
+    return price + move
 
 
 class BBMeanReversionStrategy(Strategy):
@@ -216,10 +233,19 @@ class BBMeanReversionStrategy(Strategy):
             bb_upper=upper,
             cfg=cfg,
         )
+        sl = compute_tight_stop_loss(
+            side=side,
+            price=price,
+            bb_lower=lower,
+            bb_upper=upper,
+            cfg=cfg,
+        )
         features["tp_mode"] = cfg.tp_mode
         features["tp_band_fraction"] = float(cfg.tp_band_fraction)
+        features["sl_band_fraction"] = float(cfg.sl_band_fraction)
         features["bb_mid"] = float(row["bb_mid"])
         features["take_profit"] = tp
+        features["stop_loss"] = sl
         return Signal(
             symbol=symbol,
             venue=venue,
@@ -231,7 +257,7 @@ class BBMeanReversionStrategy(Strategy):
             regime=regime if isinstance(regime, MarketRegime) else MarketRegime.UNKNOWN,
             expected_holding_minutes=cfg.max_hold_minutes,
             take_profit=tp,
-            stop_loss=None,  # soft paper: time/TP exits primary
+            stop_loss=sl,
             timestamp=now if isinstance(now, datetime) else datetime.now(timezone.utc),
             conditions_met=met,
         )

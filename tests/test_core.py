@@ -644,7 +644,11 @@ def test_leverage_scales_notional_and_fees(cfg, tmp_db):
 
 
 def test_near_extreme_and_rejection_required(cfg):
-    from trading_system.strategies import _near_extreme, compute_early_rejection_tp
+    from trading_system.strategies import (
+        _near_extreme,
+        compute_early_rejection_tp,
+        compute_tight_stop_loss,
+    )
     from trading_system.types import Side
 
     row = pd.Series(
@@ -663,7 +667,7 @@ def test_near_extreme_and_rejection_required(cfg):
     row["close"] = 103.0
     assert _near_extreme(row, Side.PUT, 0.35) is False
 
-    # TP is early rejection — short of BB mid
+    # TP is early rejection — short of BB mid; SL is tight adverse cut
     tp_call = compute_early_rejection_tp(
         side=Side.CALL,
         price=100.5,
@@ -672,8 +676,17 @@ def test_near_extreme_and_rejection_required(cfg):
         bb_upper=110.0,
         cfg=cfg.strategy,
     )
+    sl_call = compute_tight_stop_loss(
+        side=Side.CALL,
+        price=100.5,
+        bb_lower=100.0,
+        bb_upper=110.0,
+        cfg=cfg.strategy,
+    )
     assert tp_call > 100.5
     assert tp_call < 105.0
+    assert sl_call < 100.5
+
     tp_put = compute_early_rejection_tp(
         side=Side.PUT,
         price=109.5,
@@ -682,8 +695,45 @@ def test_near_extreme_and_rejection_required(cfg):
         bb_upper=110.0,
         cfg=cfg.strategy,
     )
+    sl_put = compute_tight_stop_loss(
+        side=Side.PUT,
+        price=109.5,
+        bb_lower=100.0,
+        bb_upper=110.0,
+        cfg=cfg.strategy,
+    )
     assert tp_put < 109.5
     assert tp_put > 105.0
+    assert sl_put > 109.5
+
+
+def test_stop_loss_cuts_before_large_adverse(cfg, tmp_db):
+    from trading_system.execution import PaperExecutor
+    from trading_system.portfolio import Portfolio
+
+    port = Portfolio(tmp_db, 100)
+    cfg.execution.leverage = 1.0
+    ex = PaperExecutor(cfg, tmp_db, port)
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        take_profit=65100,
+        stop_loss=64950,
+        timestamp=datetime.now(timezone.utc),
+        regime=MarketRegime.RANGING,
+    )
+    ex.open_trade(sig, 10.0, 65000)
+    closed = ex.manage_open(
+        {"BTC/USDT": 64940.0},
+        forex_session_open=True,
+        close_fx_at_session_end=False,
+    )
+    assert len(closed) == 1
+    assert closed[0].exit_reason == "stop_loss"
 
 
 def test_adaptive_time_stop_prefers_early_window():

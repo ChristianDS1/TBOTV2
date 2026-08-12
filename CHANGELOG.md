@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6
+
+- Add tight stop_loss (`sl_min_bps` 10 / `sl_band_fraction` 0.12) to cut large adverse losses
+- Take-profit math unchanged (still used for fee-edge entry checks)
+
 ## 0.1.5
 
 - Paper defaults: margin `base_trade_size=10`, leverage `20x` (notional €200)

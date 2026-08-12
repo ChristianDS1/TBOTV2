@@ -40,6 +40,8 @@ class StrategyConfig(BaseModel):
     tp_band_fraction: float = 0.25
     tp_min_bps: float = 12.0
     tp_fixed_bps: float = 15.0
+    sl_band_fraction: float = 0.12
+    sl_min_bps: float = 10.0
     bb_period: int = 20
     bb_std: float = 2.0
     rsi_period: int = 10

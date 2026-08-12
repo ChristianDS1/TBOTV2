@@ -118,7 +118,12 @@ class Backtester:
             if open_trade:
                 bars_held = i - open_trade["entry_i"]
                 exit_reason = None
-                if bars_held >= max_hold:
+                sl = open_trade.get("sl")
+                if open_trade["side"] == "call" and sl is not None and price <= sl:
+                    exit_reason = "stop_loss"
+                elif open_trade["side"] == "put" and sl is not None and price >= sl:
+                    exit_reason = "stop_loss"
+                elif bars_held >= max_hold:
                     exit_reason = "time_stop"
                 elif open_trade["side"] == "call" and price >= open_trade["tp"]:
                     exit_reason = "take_profit"
@@ -159,6 +164,7 @@ class Backtester:
                             "side": sig.side.value,
                             "entry": price,
                             "tp": sig.take_profit or price,
+                            "sl": sig.stop_loss,
                             "entry_i": i,
                             "confidence": sig.confidence,
                             "symbol": symbol,

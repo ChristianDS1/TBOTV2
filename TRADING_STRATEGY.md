@@ -19,10 +19,9 @@ Enter when ≥ `min_conditions` (default 3) **and**:
 - `require_rejection_candle: true` → rejection candle is a hard gate  
 - close still near the extreme (`max_extreme_retrace_pct`, default 0.35 of band width toward mid)
 
-**Take profit is NOT the BB midline.** Target is an early rejection scalp:
-- `tp_mode: band_fraction` → move ≈ `tp_band_fraction` × band width toward mid (default 0.25)
-- floored by `tp_min_bps` (default 12) so fees are learnable
-- clamped short of mid so we never wait for a full mean reversion
+**Take profit / stop:**
+- TP unchanged: `tp_band_fraction` 0.25 / `tp_min_bps` 12 — early rejection target short of mid; also used for fee-edge entry checks
+- SL new: `sl_band_fraction` 0.12 / `sl_min_bps` 10 — tight cut; exits as `stop_loss` before time_stop balloons the loss
 
 **Hold window (adaptive):** pattern priority is the first minutes (`preferred_hold_minutes`, default 3). After that the bot extends toward `max_hold_minutes` (10) only if price is still progressing toward TP / in favor; otherwise time-stops early. Hard cap always at 10.
 

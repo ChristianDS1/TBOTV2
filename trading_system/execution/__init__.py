@@ -148,6 +148,16 @@ class PaperExecutor:
                 closed.append(self.close_trade(pos, px, "liquidation"))
                 continue
 
+            # Tight stop-loss (cut losers before time_stop balloons R:R)
+            if pos.stop_loss is not None:
+                hit_sl = (
+                    (pos.side.value == "call" and px <= pos.stop_loss)
+                    or (pos.side.value == "put" and px >= pos.stop_loss)
+                )
+                if hit_sl:
+                    closed.append(self.close_trade(pos, px, "stop_loss"))
+                    continue
+
             max_hold = float(self.cfg.strategy.max_hold_minutes)
             pref_hold = float(
                 getattr(self.cfg.strategy, "preferred_hold_minutes", 3) or 3

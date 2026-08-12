@@ -7,7 +7,7 @@
 - Max simultaneous positions: 5 (configurable).
 - Correlation groups: crypto majors / USD FX pairs.
 - **No** daily loss kill — bot keeps collecting data.
-- Exits: take-profit (early rejection target, **not** BB mid), adaptive time stop (prefer ~3m, max 10m), soft liquidation, FX session end.
+- Exits: take-profit (early rejection target), **tight stop_loss**, adaptive time stop (prefer ~3m, max 10m), soft liquidation, FX session end.
 
 ## Paper leverage model
 
