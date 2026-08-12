@@ -38,6 +38,20 @@ def main(argv: list[str] | None = None) -> None:
         help="Backfill gross/cost_erosion on closed trades and rebuild pattern evidence",
     )
 
+    purge = sub.add_parser(
+        "purge-trades",
+        help="Delete trades at/after a cutoff (default 2026-08-12T16:15 UTC) and rebuild patterns",
+    )
+    purge.add_argument(
+        "--after",
+        default="2026-08-12T16:15:00+00:00",
+        help="UTC cutoff ISO datetime",
+    )
+    purge.add_argument("--db", default=None, help="Optional path to trading.db")
+    purge.add_argument("--dry-run", action="store_true")
+    purge.add_argument("--no-rebuild", action="store_true")
+    purge.add_argument("--yes", "-y", action="store_true")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
@@ -80,6 +94,24 @@ def main(argv: list[str] | None = None) -> None:
         db = Database(cfg.db_path())
         summary = rebuild_patterns(db, cfg.learning, quiet=True)
         print(summary)
+
+    elif args.cmd == "purge-trades":
+        import runpy
+
+        from trading_system.config import ROOT
+
+        script = ROOT / "scripts" / "purge_trades_after.py"
+        argv = ["--after", args.after]
+        if args.db:
+            argv.extend(["--db", args.db])
+        if args.dry_run:
+            argv.append("--dry-run")
+        if args.no_rebuild:
+            argv.append("--no-rebuild")
+        if args.yes:
+            argv.append("--yes")
+        sys.argv = [str(script), *argv]
+        runpy.run_path(str(script), run_name="__main__")
 
     else:
         parser.print_help()

@@ -1,15 +1,17 @@
 ---
-description: After code adjustments, commit and push to GitHub main automatically
+description: After adjustments — summarize first, then commit and push to main
 alwaysApply: true
 ---
 
-# Auto push after adjustments
+# Summary then push after adjustments
 
 When the user asks for an adjustment/fix/feature and implementation is done:
 
-1. Commit the relevant changes (clear message, no secrets: never `.env` or `*.db` / `*.bak*`).
-2. Push to `origin main` (this repo: https://github.com/ChristianDS1/TBOTV2.git).
-3. If push needs approval UI, request it immediately — do not leave commits unpushed.
-4. Confirm with the commit hash / that `main` is up to date.
+1. **First** give a short user-facing summary of what was implemented/changed (files and behavior). Do this **before** committing or pushing.
+2. Then commit the relevant changes (clear message, no secrets: never `.env` or `*.db` / `*.bak*`).
+3. Push to `origin main` (this repo: https://github.com/ChristianDS1/TBOTV2.git).
+4. If push needs approval UI, request it immediately — do not leave commits unpushed.
+5. Confirm with the commit hash / that `main` is up to date.
 
 Do **not** wait for a separate "please push" message after adjustments unless the user said not to push.
+Do **not** push before the summary when the user has asked for this order.
