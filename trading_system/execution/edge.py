@@ -120,6 +120,99 @@ def can_take_profit_net_positive(
     return estimate_close_net(pos, mark_price, fee_bps, slippage_bps) > 0.0
 
 
+def _f(row: dict, key: str, default: float | None = None) -> float | None:
+    v = row.get(key, default)
+    if v is None:
+        return default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def detect_trend_fade(
+    side: Side | str,
+    row: dict,
+    *,
+    min_score: int = 2,
+) -> tuple[bool, list[str]]:
+    """
+    Score opposing rejection + momentum fade. True when score >= min_score.
+
+    CALL fade signals (PUT mirrored):
+      1) rejection_bear
+      2) macd_fast hist falling 2 bars OR macd_fast_bear_cross
+      3) RSI rollover from >=50
+      4) macd_slow_hist deteriorating vs trade direction
+    """
+    side_v = side.value if isinstance(side, Side) else str(side).lower()
+    is_call = side_v == "call"
+    reasons: list[str] = []
+
+    if is_call:
+        if bool(row.get("rejection_bear")):
+            reasons.append("rejection_bear")
+        hist = _f(row, "macd_fast_hist")
+        prev = _f(row, "macd_fast_hist_prev")
+        prev2 = _f(row, "macd_fast_hist_prev2")
+        bear_cross = bool(row.get("macd_fast_bear_cross"))
+        falling2 = (
+            hist is not None
+            and prev is not None
+            and prev2 is not None
+            and hist < prev < prev2
+        )
+        if bear_cross or falling2:
+            reasons.append("macd_fast_fade")
+        rsi = _f(row, "rsi")
+        rsi_prev = _f(row, "rsi_prev")
+        if (
+            rsi is not None
+            and rsi_prev is not None
+            and rsi < rsi_prev
+            and (rsi_prev >= 50 or (rsi_prev >= 50 and rsi < 50))
+        ):
+            reasons.append("rsi_rollover")
+        elif rsi is not None and rsi_prev is not None and rsi_prev >= 50 and rsi < 50:
+            reasons.append("rsi_rollover")
+        slow = _f(row, "macd_slow_hist")
+        slow_prev = _f(row, "macd_slow_hist_prev")
+        if slow is not None and slow_prev is not None and slow < slow_prev:
+            reasons.append("macd_slow_fade")
+    else:
+        if bool(row.get("rejection_bull")):
+            reasons.append("rejection_bull")
+        hist = _f(row, "macd_fast_hist")
+        prev = _f(row, "macd_fast_hist_prev")
+        prev2 = _f(row, "macd_fast_hist_prev2")
+        bull_cross = bool(row.get("macd_fast_bull_cross"))
+        rising2 = (
+            hist is not None
+            and prev is not None
+            and prev2 is not None
+            and hist > prev > prev2
+        )
+        if bull_cross or rising2:
+            reasons.append("macd_fast_fade")
+        rsi = _f(row, "rsi")
+        rsi_prev = _f(row, "rsi_prev")
+        if (
+            rsi is not None
+            and rsi_prev is not None
+            and rsi > rsi_prev
+            and rsi_prev <= 50
+        ):
+            reasons.append("rsi_rollover")
+        elif rsi is not None and rsi_prev is not None and rsi_prev <= 50 and rsi > 50:
+            reasons.append("rsi_rollover")
+        slow = _f(row, "macd_slow_hist")
+        slow_prev = _f(row, "macd_slow_hist_prev")
+        if slow is not None and slow_prev is not None and slow > slow_prev:
+            reasons.append("macd_slow_fade")
+
+    return len(reasons) >= int(min_score), reasons
+
+
 # Back-compat alias
 def can_take_profit_net_non_negative(
     pos: Position,

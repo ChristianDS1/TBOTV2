@@ -106,6 +106,7 @@ def classify_strategy_outcome(pos: Position) -> tuple[str, bool]:
     Strategy win/loss for pattern learning — not net cash.
 
     - take_profit => strategy win (signal hit its target)
+    - trend_exit => strategy win only if net pnl > 0
     - else use gross_pnl if available
     - else fall back to net pnl
 
@@ -116,6 +117,8 @@ def classify_strategy_outcome(pos: Position) -> tuple[str, bool]:
 
     if pos.exit_reason == "take_profit":
         strategy_win = True
+    elif pos.exit_reason == "trend_exit":
+        strategy_win = net > 0
     elif gross is not None:
         strategy_win = gross > 0
     else:

@@ -20,12 +20,13 @@ Enter when ≥ `min_conditions` (default 3) **and**:
 - close still near the extreme (`max_extreme_retrace_pct`, default 0.35 of band width toward mid)
 
 **Take profit / stop:**
-- TP unchanged: `tp_band_fraction` 0.25 / `tp_min_bps` 12 — early rejection target short of mid; also used for fee-edge entry checks
-- SL default `sl_mode: rr_from_tp` — net reward:risk **1 : `tp_rr_multiple`** (default 1.5). Exit fees deducted from TP net and added into SL budget so both legs are fee-aware
-- Legacy `sl_mode: band` uses `sl_band_fraction` / `sl_min_bps`
-- `sl_include_exit_fees: true` — fee reserve on both TP/SL net for RR sizing; net budget used at manage-open
+- TP default `tp_mode: trend_fade` — **no fixed TP price**; exit as `trend_exit` when opposing rejection + momentum fade score ≥ `trend_fade_min_score` (default 2) and estimated net &gt; 0
+- Fee-edge at entry still uses distance to **BB mid** as expected-move proxy (not a hard target)
+- SL default `sl_mode: margin_pct` — max **NET** loss = `sl_margin_pct` of margin (default **4%** → €0.40 on margin 10); exit fees included in the budget
+- Paper defaults: margin `base_trade_size` 10, `leverage` 20
+- Legacy: `tp_mode: band_fraction|fixed_bps`, `sl_mode: rr_from_tp|band`
 
-**Hold window (adaptive):** pattern priority is the first minutes (`preferred_hold_minutes`, default 3). After that the bot extends toward `max_hold_minutes` (10) only if price is still progressing toward TP / in favor; otherwise time-stops early. Hard cap always at 10.
+**Hold window (adaptive):** pattern priority is the first minutes (`preferred_hold_minutes`, default 3). After that the bot extends toward `max_hold_minutes` (10) only if price is still progressing / in favor; otherwise time-stops early. Hard cap always at 10.
 
 ### PUT (short)
 

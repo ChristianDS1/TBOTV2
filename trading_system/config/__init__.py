@@ -36,16 +36,19 @@ class StrategyConfig(BaseModel):
     min_conditions: int = 3
     require_rejection_candle: bool = True
     max_extreme_retrace_pct: float = 0.35
-    tp_mode: str = "band_fraction"  # band_fraction | fixed_bps (never bb_mid)
+    # trend_fade = no fixed TP (exit on momentum/trend fade); legacy: band_fraction | fixed_bps
+    tp_mode: str = "trend_fade"
     tp_band_fraction: float = 0.25
     tp_min_bps: float = 12.0
     tp_fixed_bps: float = 15.0
-    # SL: rr_from_tp → net R:R 1:tp_rr_multiple (fees on both); band → legacy band/min
-    sl_mode: str = "rr_from_tp"
-    tp_rr_multiple: float = 1.5  # TP_net / SL_net (1:1.5 → multiple 1.5)
+    # SL: margin_pct (default) | rr_from_tp | band
+    sl_mode: str = "margin_pct"
+    sl_margin_pct: float = 4.0  # max NET loss as % of margin
+    tp_rr_multiple: float = 1.5  # legacy rr_from_tp
     sl_band_fraction: float = 0.12
     sl_min_bps: float = 10.0
     sl_include_exit_fees: bool = True
+    trend_fade_min_score: int = 2
     bb_period: int = 20
     bb_std: float = 2.0
     rsi_period: int = 10

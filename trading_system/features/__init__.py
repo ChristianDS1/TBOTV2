@@ -116,7 +116,9 @@ def build_features(
 
     # Histogram weakening / cross hints
     out["macd_fast_hist_prev"] = out["macd_fast_hist"].shift(1)
+    out["macd_fast_hist_prev2"] = out["macd_fast_hist"].shift(2)
     out["macd_slow_hist_prev"] = out["macd_slow_hist"].shift(1)
+    out["rsi_prev"] = out["rsi"].shift(1)
     out["macd_fast_bull_cross"] = (out["macd_fast_hist_prev"] < 0) & (out["macd_fast_hist"] >= 0)
     out["macd_fast_bear_cross"] = (out["macd_fast_hist_prev"] > 0) & (out["macd_fast_hist"] <= 0)
     out["macd_slow_weakening_bear"] = (
@@ -135,12 +137,18 @@ def latest_feature_dict(df: pd.DataFrame) -> dict[str, Any]:
     keys = [
         "close",
         "rsi",
+        "rsi_prev",
         "bb_lower",
         "bb_mid",
         "bb_upper",
         "bb_width",
         "macd_fast_hist",
+        "macd_fast_hist_prev",
+        "macd_fast_hist_prev2",
         "macd_slow_hist",
+        "macd_slow_hist_prev",
+        "macd_fast_bull_cross",
+        "macd_fast_bear_cross",
         "pct_from_mid",
         "touch_lower",
         "touch_upper",

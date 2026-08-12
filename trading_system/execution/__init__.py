@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 from trading_system.config import AppConfig
 from trading_system.database import Database
 from trading_system.execution.edge import (
     can_take_profit_net_positive,
+    detect_trend_fade,
     estimate_close_net,
     position_notional,
     should_adaptive_time_stop,
@@ -98,7 +100,7 @@ class PaperExecutor:
         net = raw_fill_pnl - exit_fees
 
         # Cost erosion: strategy achieved target / gross positive but net red
-        strategy_ok = reason == "take_profit" or gross > 0
+        strategy_ok = reason in ("take_profit", "trend_exit") or gross > 0
         cost_erosion = bool(strategy_ok and net <= 0)
 
         pos.exit_price = fill
@@ -129,6 +131,7 @@ class PaperExecutor:
         mark_prices: dict[str, float],
         forex_session_open: bool,
         close_fx_at_session_end: bool,
+        feature_rows: dict[str, dict[str, Any]] | None = None,
     ) -> list[Position]:
         closed: list[Position] = []
         now = datetime.now(timezone.utc)
@@ -137,6 +140,9 @@ class PaperExecutor:
             getattr(self.cfg.execution, "tp_require_positive_net", True)
             or getattr(self.cfg.execution, "tp_require_non_negative_net", True)
         )
+        feature_rows = feature_rows or {}
+        tp_mode = (getattr(self.cfg.strategy, "tp_mode", "trend_fade") or "trend_fade").lower()
+        fade_min = int(getattr(self.cfg.strategy, "trend_fade_min_score", 2) or 2)
 
         for pos in list(self.portfolio.open_positions()):
             px = mark_prices.get(pos.symbol)
@@ -149,32 +155,35 @@ class PaperExecutor:
                 closed.append(self.close_trade(pos, px, "liquidation"))
                 continue
 
-            # Stop-loss: price hit OR estimated NET (incl. exit fee) hits budget
-            if pos.stop_loss is not None:
-                hit_sl = (
-                    (pos.side.value == "call" and px <= pos.stop_loss)
-                    or (pos.side.value == "put" and px >= pos.stop_loss)
-                )
+            feat: dict[str, Any] = {}
+            try:
+                feat = json.loads(pos.features_json or "{}")
+            except Exception:
+                feat = {}
+
+            # Stop-loss: price hit OR estimated NET hits cash/bps budget
+            if pos.stop_loss is not None or feat.get("sl_budget_cash") is not None or feat.get("sl_budget_bps") is not None:
+                hit_sl = False
+                if pos.stop_loss is not None:
+                    hit_sl = (
+                        (pos.side.value == "call" and px <= pos.stop_loss)
+                        or (pos.side.value == "put" and px >= pos.stop_loss)
+                    )
                 net_est = estimate_close_net(
                     pos,
                     px,
                     self.cfg.execution.fee_bps,
                     self.cfg.execution.slippage_bps,
                 )
-                budget_cash = None
-                try:
-                    feat = json.loads(pos.features_json or "{}")
+                budget_cash = feat.get("sl_budget_cash")
+                if budget_cash is None:
                     budget_bps = feat.get("sl_budget_bps")
                     if budget_bps is not None:
                         budget_cash = (
                             position_notional(pos) * float(budget_bps) / 10_000.0
                         )
-                except Exception:
-                    budget_cash = None
-                # If no stored budget, derive from distance entry→SL + exit fee already
-                # baked into fee-aware SL price (fallback: price hit only)
                 hit_net_budget = (
-                    budget_cash is not None and net_est <= -abs(budget_cash)
+                    budget_cash is not None and net_est <= -abs(float(budget_cash))
                 )
                 if hit_sl or hit_net_budget:
                     closed.append(self.close_trade(pos, px, "stop_loss"))
@@ -186,6 +195,30 @@ class PaperExecutor:
             )
             min_hold = float(getattr(self.cfg.strategy, "min_hold_minutes", 1) or 1)
             held_min = (now - pos.entry_time).total_seconds() / 60.0
+
+            # Trend-fade exit (dynamic TP) before time_stop
+            if tp_mode == "trend_fade" and held_min >= min_hold:
+                row = feature_rows.get(pos.symbol) or {}
+                faded, fade_reasons = detect_trend_fade(
+                    pos.side, row, min_score=fade_min
+                )
+                if faded:
+                    ok_net = can_take_profit_net_positive(
+                        pos,
+                        px,
+                        self.cfg.execution.fee_bps,
+                        self.cfg.execution.slippage_bps,
+                    )
+                    if (not require_pos_net) or ok_net:
+                        # stash reasons into features for debugging (best-effort)
+                        try:
+                            feat["trend_fade_reasons"] = fade_reasons
+                            pos.features_json = json.dumps(feat)
+                        except Exception:
+                            pass
+                        closed.append(self.close_trade(pos, px, "trend_exit"))
+                        continue
+
             if should_adaptive_time_stop(
                 pos,
                 px,
@@ -197,6 +230,7 @@ class PaperExecutor:
                 closed.append(self.close_trade(pos, px, "time_stop"))
                 continue
 
+            # Legacy fixed-price TP
             if pos.take_profit is not None:
                 hit_tp = (
                     (pos.side.value == "call" and px >= pos.take_profit)
@@ -212,7 +246,6 @@ class PaperExecutor:
                     if (not require_pos_net) or ok_net:
                         closed.append(self.close_trade(pos, px, "take_profit"))
                         continue
-                    # Hit early-rejection TP but net would be <= 0 — hold for better or time_stop
                     logger.debug(
                         "TP deferred (net not > 0) %s %s mark=%.6f",
                         pos.side.value,

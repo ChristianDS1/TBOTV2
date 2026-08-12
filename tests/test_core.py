@@ -757,7 +757,156 @@ def test_near_extreme_and_rejection_required(cfg):
     )
     assert trigger_b < budget_b
     assert abs(budget_b - (trigger_b + 6.0)) < 1e-6 or trigger_b == 1.0
-    cfg.strategy.sl_mode = "rr_from_tp"
+    cfg.strategy.sl_mode = "margin_pct"
+
+
+def test_sl_margin_pct_four_percent(cfg, tmp_db):
+    from trading_system.execution import PaperExecutor
+    from trading_system.portfolio import Portfolio
+    from trading_system.strategies import compute_sl_from_margin_pct
+
+    sl, budget_bps, trigger_bps, budget_cash = compute_sl_from_margin_pct(
+        side=Side.CALL,
+        price=65000.0,
+        margin=10.0,
+        leverage=20.0,
+        sl_margin_pct=4.0,
+        exit_fee_bps=6.0,
+    )
+    assert abs(budget_cash - 0.40) < 1e-9
+    assert abs(budget_bps - 20.0) < 1e-6  # 0.40 / 200 * 10000
+    assert abs(trigger_bps - 14.0) < 1e-6
+    assert sl < 65000.0
+
+    port = Portfolio(tmp_db, 100)
+    cfg.execution.leverage = 20.0
+    cfg.execution.fee_bps = 4.0
+    cfg.execution.slippage_bps = 2.0
+    cfg.strategy.tp_mode = "trend_fade"
+    ex = PaperExecutor(cfg, tmp_db, port)
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        take_profit=None,
+        stop_loss=sl,
+        timestamp=datetime.now(timezone.utc),
+        regime=MarketRegime.RANGING,
+        features={
+            "sl_budget_cash": budget_cash,
+            "sl_budget_bps": budget_bps,
+            "sl_mode": "margin_pct",
+        },
+    )
+    ex.open_trade(sig, 10.0, 65000)
+    # Adverse enough that net (move + exit fee) hits ~0.40 budget
+    closed = ex.manage_open(
+        {"BTC/USDT": 64890.0},
+        forex_session_open=True,
+        close_fx_at_session_end=False,
+        feature_rows={},
+    )
+    assert len(closed) == 1
+    assert closed[0].exit_reason == "stop_loss"
+    assert closed[0].pnl is not None
+    assert closed[0].pnl > -0.55  # around 4% margin, not runaway
+
+
+def test_trend_fade_exit_requires_score_and_net(cfg, tmp_db):
+    from datetime import timedelta
+
+    from trading_system.execution import PaperExecutor
+    from trading_system.execution.edge import detect_trend_fade
+    from trading_system.portfolio import Portfolio
+
+    faded, reasons = detect_trend_fade(
+        Side.CALL,
+        {
+            "rejection_bear": True,
+            "macd_fast_bear_cross": True,
+            "macd_fast_hist": -0.1,
+            "macd_fast_hist_prev": 0.1,
+            "macd_fast_hist_prev2": 0.2,
+            "rsi": 48,
+            "rsi_prev": 55,
+            "macd_slow_hist": 0.01,
+            "macd_slow_hist_prev": 0.05,
+        },
+        min_score=2,
+    )
+    assert faded is True
+    assert len(reasons) >= 2
+
+    not_faded, _ = detect_trend_fade(
+        Side.CALL,
+        {
+            "rejection_bear": False,
+            "macd_fast_bear_cross": False,
+            "macd_fast_hist": 0.2,
+            "macd_fast_hist_prev": 0.1,
+            "macd_fast_hist_prev2": 0.05,
+            "rsi": 60,
+            "rsi_prev": 55,
+            "macd_slow_hist": 0.05,
+            "macd_slow_hist_prev": 0.01,
+        },
+        min_score=2,
+    )
+    assert not_faded is False
+
+    port = Portfolio(tmp_db, 100)
+    cfg.execution.leverage = 20.0
+    cfg.execution.fee_bps = 4.0
+    cfg.execution.slippage_bps = 2.0
+    cfg.strategy.tp_mode = "trend_fade"
+    cfg.strategy.min_hold_minutes = 0  # allow immediate fade in test
+    ex = PaperExecutor(cfg, tmp_db, port)
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        take_profit=None,
+        stop_loss=60000,  # far
+        timestamp=datetime.now(timezone.utc) - timedelta(minutes=2),
+        regime=MarketRegime.RANGING,
+        features={"sl_budget_cash": 0.40, "sl_mode": "margin_pct"},
+    )
+    pos = ex.open_trade(sig, 10.0, 65000)
+    # Persist past entry_time — manage_open reloads from DB
+    past = datetime.now(timezone.utc) - timedelta(minutes=2)
+    with tmp_db.connection() as conn:
+        conn.execute(
+            "UPDATE trades SET entry_time=? WHERE id=?",
+            (past.isoformat(), pos.id),
+        )
+    # Favorable mark so net > 0 after fees (~ +40 bps on notional 200)
+    fade_row = {
+        "rejection_bear": True,
+        "macd_fast_bear_cross": True,
+        "macd_fast_hist": -0.1,
+        "macd_fast_hist_prev": 0.2,
+        "macd_fast_hist_prev2": 0.3,
+        "rsi": 49,
+        "rsi_prev": 58,
+        "macd_slow_hist": 0.0,
+        "macd_slow_hist_prev": 0.1,
+    }
+    closed = ex.manage_open(
+        {"BTC/USDT": 65260.0},
+        forex_session_open=True,
+        close_fx_at_session_end=False,
+        feature_rows={"BTC/USDT": fade_row},
+    )
+    assert len(closed) == 1
+    assert closed[0].exit_reason == "trend_exit"
+    assert closed[0].pnl is not None and closed[0].pnl > 0
+
 
 def test_stop_loss_cuts_before_large_adverse(cfg, tmp_db):
     from trading_system.execution import PaperExecutor

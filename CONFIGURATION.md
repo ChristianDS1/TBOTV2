@@ -12,14 +12,16 @@
 | `strategy.min_conditions` | Entry threshold (default 3) |
 | `strategy.require_rejection_candle` | Rejection wick hard-required |
 | `strategy.max_extreme_retrace_pct` | Max distance from extreme toward mid (fraction of band width) |
-| `strategy.tp_mode` | `band_fraction` (default) or `fixed_bps` — never BB mid |
-| `strategy.tp_band_fraction` | Early rejection TP as fraction of band width (default 0.25) |
-| `strategy.tp_min_bps` | Minimum TP distance in bps (default 12; also feeds fee-edge check) |
-| `strategy.sl_mode` | `rr_from_tp` (default) or `band` |
-| `strategy.tp_rr_multiple` | Net TP/SL ratio when `rr_from_tp` (default 1.5 → 1:1.5) |
+| `strategy.tp_mode` | `trend_fade` (default, no fixed TP) or legacy `band_fraction` / `fixed_bps` |
+| `strategy.trend_fade_min_score` | Min fade signals to exit (default 2) |
+| `strategy.tp_band_fraction` | Legacy early TP fraction of band width |
+| `strategy.tp_min_bps` | Legacy min TP distance / still feeds mid proxy context |
+| `strategy.sl_mode` | `margin_pct` (default), `rr_from_tp`, or `band` |
+| `strategy.sl_margin_pct` | Max NET loss as % of margin (default 4) |
+| `strategy.tp_rr_multiple` | Legacy net TP/SL ratio when `rr_from_tp` |
 | `strategy.sl_band_fraction` | Legacy band SL fraction of band width |
 | `strategy.sl_min_bps` | Legacy band SL min budget in bps |
-| `strategy.sl_include_exit_fees` | Include exit fee in SL (and RR) net sizing (default true) |
+| `strategy.sl_include_exit_fees` | Include exit fee in SL net sizing (default true) |
 | `strategy.min_hold_minutes` | Minimum hold floor (default 1) |
 | `strategy.preferred_hold_minutes` | Primary early-rejection window (default 3); after this, bot decides extend vs time-stop |
 | `strategy.max_hold_minutes` | Hard time-stop cap (default 10) |
@@ -32,6 +34,6 @@
 | `risk.soft_mode` | No daily kill |
 | `forex_session.*` | UTC session window |
 | `execution.leverage` | Paper margin multiplier (default 20); fees/PnL on notional |
-| `execution.tp_require_positive_net` | TP only if estimated net &gt; 0 |
+| `execution.tp_require_positive_net` | `trend_exit` / price-TP only if estimated net &gt; 0 |
 | `execution.poll_interval_seconds` | Engine loop (5) |
 | `dashboard.refresh_seconds` | UI poll (5) |

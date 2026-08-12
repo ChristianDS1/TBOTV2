@@ -77,6 +77,33 @@ def compute_early_rejection_tp(
     return price - max(move, min_move * 0.5)
 
 
+def compute_sl_from_margin_pct(
+    *,
+    side: Side,
+    price: float,
+    margin: float,
+    leverage: float,
+    sl_margin_pct: float = 4.0,
+    exit_fee_bps: float = 0.0,
+) -> tuple[float, float, float, float]:
+    """
+    SL sized so max NET loss ≈ sl_margin_pct of margin.
+
+    Returns (stop_price, budget_bps_on_notional, trigger_bps, budget_cash).
+    """
+    margin = max(1e-9, float(margin))
+    lev = max(1.0, float(leverage))
+    notional = margin * lev
+    budget_cash = margin * float(sl_margin_pct) / 100.0
+    budget_bps = budget_cash / notional * 10_000.0 if notional > 0 else 0.0
+    fee = max(0.0, float(exit_fee_bps))
+    trigger_bps = max(1.0, budget_bps - fee) if fee > 0 else max(1.0, budget_bps)
+    move = price * trigger_bps / 10_000.0
+    if side == Side.CALL:
+        return price - move, budget_bps, trigger_bps, budget_cash
+    return price + move, budget_bps, trigger_bps, budget_cash
+
+
 def compute_sl_from_tp_rr(
     *,
     side: Side,
@@ -119,22 +146,41 @@ def compute_tight_stop_loss(
     cfg: StrategyConfig,
     exit_fee_bps: float = 0.0,
     take_profit: float | None = None,
+    margin: float | None = None,
+    leverage: float | None = None,
 ) -> tuple[float, float, float]:
     """
     Stop loss. Returns (stop_price, budget_bps, trigger_bps).
 
-    sl_mode=rr_from_tp (default): derive SL from TP so net R:R = 1:tp_rr_multiple
-    with exit fees on both legs. Legacy sl_mode=band uses band/min budget.
+    sl_mode=margin_pct: NET loss cap as % of margin.
+    sl_mode=rr_from_tp: derive from TP.
+    sl_mode=band: legacy band/min budget.
     """
-    mode = (getattr(cfg, "sl_mode", "rr_from_tp") or "rr_from_tp").lower()
+    fee = (
+        float(exit_fee_bps)
+        if getattr(cfg, "sl_include_exit_fees", True)
+        else 0.0
+    )
+    mode = (getattr(cfg, "sl_mode", "margin_pct") or "margin_pct").lower()
+    if mode == "margin_pct":
+        m = float(margin) if margin is not None else 10.0
+        lev = float(leverage) if leverage is not None else 20.0
+        sl, budget_bps, trigger_bps, _cash = compute_sl_from_margin_pct(
+            side=side,
+            price=price,
+            margin=m,
+            leverage=lev,
+            sl_margin_pct=float(getattr(cfg, "sl_margin_pct", 4.0)),
+            exit_fee_bps=fee,
+        )
+        return sl, budget_bps, trigger_bps
+
     if mode == "rr_from_tp" and take_profit is not None:
         sl, budget_bps, trigger_bps, _tp_net = compute_sl_from_tp_rr(
             side=side,
             price=price,
             take_profit=float(take_profit),
-            exit_fee_bps=float(exit_fee_bps)
-            if getattr(cfg, "sl_include_exit_fees", True)
-            else 0.0,
+            exit_fee_bps=fee,
             reward_multiple=float(getattr(cfg, "tp_rr_multiple", 1.5)),
         )
         return sl, budget_bps, trigger_bps
@@ -145,8 +191,8 @@ def compute_tight_stop_loss(
     budget_bps = budget_move / price * 10_000.0 if price > 0 else float(cfg.sl_min_bps)
 
     trigger_bps = budget_bps
-    if getattr(cfg, "sl_include_exit_fees", True) and exit_fee_bps > 0:
-        trigger_bps = max(1.0, budget_bps - float(exit_fee_bps))
+    if fee > 0:
+        trigger_bps = max(1.0, budget_bps - fee)
     move = price * trigger_bps / 10_000.0
 
     if side == Side.CALL:
@@ -285,26 +331,35 @@ class BBMeanReversionStrategy(Strategy):
             return None
 
         price = float(row["close"])
-        tp = compute_early_rejection_tp(
-            side=side,
-            price=price,
-            bb_lower=lower,
-            bb_mid=float(row["bb_mid"]),
-            bb_upper=upper,
-            cfg=cfg,
-        )
+        tp_mode = (cfg.tp_mode or "trend_fade").lower()
+        tp: float | None
+        if tp_mode == "trend_fade":
+            tp = None
+        else:
+            tp = compute_early_rejection_tp(
+                side=side,
+                price=price,
+                bb_lower=lower,
+                bb_mid=float(row["bb_mid"]),
+                bb_upper=upper,
+                cfg=cfg,
+            )
+        # Placeholder SL — engine recomputes with margin/leverage + exit fees
         sl, sl_budget_bps, sl_trigger_bps = compute_tight_stop_loss(
             side=side,
             price=price,
             bb_lower=lower,
             bb_upper=upper,
             cfg=cfg,
-            exit_fee_bps=0.0,  # engine applies exit-fee reserve when enabled
+            exit_fee_bps=0.0,
             take_profit=tp,
+            margin=10.0,
+            leverage=20.0,
         )
-        features["tp_mode"] = cfg.tp_mode
+        features["tp_mode"] = tp_mode
         features["tp_band_fraction"] = float(cfg.tp_band_fraction)
-        features["sl_mode"] = getattr(cfg, "sl_mode", "rr_from_tp")
+        features["sl_mode"] = getattr(cfg, "sl_mode", "margin_pct")
+        features["sl_margin_pct"] = float(getattr(cfg, "sl_margin_pct", 4.0))
         features["tp_rr_multiple"] = float(getattr(cfg, "tp_rr_multiple", 1.5))
         features["sl_band_fraction"] = float(cfg.sl_band_fraction)
         features["sl_budget_bps"] = sl_budget_bps
@@ -312,6 +367,9 @@ class BBMeanReversionStrategy(Strategy):
         features["bb_mid"] = float(row["bb_mid"])
         features["take_profit"] = tp
         features["stop_loss"] = sl
+        features["trend_fade_min_score"] = int(
+            getattr(cfg, "trend_fade_min_score", 2)
+        )
         return Signal(
             symbol=symbol,
             venue=venue,

@@ -32,13 +32,15 @@ strategy:
   require_rejection_candle: true  # rejection_bull/bear hard gate (still counts toward 3/5)
   # Max retrace from extreme toward mid before entry is "too late" (fraction of band width)
   max_extreme_retrace_pct: 0.35
-  # TP = early rejection move (NOT BB mid). Used for exits + fee edge check at entry.
-  tp_mode: band_fraction
+  # TP: no fixed price — exit on trend/momentum fade (indicators + rejection against).
+  # bb_mid still used only as fee-edge proxy at entry.
+  tp_mode: trend_fade
   tp_band_fraction: 0.25
   tp_min_bps: 12.0
-  # SL from TP at net 1:1.5 (1=SL, 1.5=TP), exit fees on both legs.
-  # Legacy: sl_mode=band + sl_band_fraction / sl_min_bps.
-  sl_mode: rr_from_tp
+  trend_fade_min_score: 2
+  # SL = max NET loss as % of margin (fees included). Legacy: rr_from_tp | band.
+  sl_mode: margin_pct
+  sl_margin_pct: 4.0
   tp_rr_multiple: 1.5
   sl_band_fraction: 0.12
   sl_min_bps: 10.0
@@ -105,7 +107,7 @@ execution:
   hard_min_edge_multiple: 0.5   # discovery: was 0.75; rollback to 0.75 if too loose
   soft_min_edge_multiple: 1.15  # was 1.25
   soft_edge_confidence_penalty: 8.0
-  # Hit BB mid but wait unless estimated NET PnL is strictly > 0 (not == 0)
+  # Trend-fade / legacy price-TP exits require estimated NET > 0
   tp_require_positive_net: true
 
 dashboard:

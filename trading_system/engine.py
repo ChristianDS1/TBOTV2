@@ -13,12 +13,13 @@ from trading_system.data.forex import ForexAdapter
 from trading_system.database import Database
 from trading_system.execution import PaperExecutor
 from trading_system.execution.edge import assess_entry_edge
+from trading_system.features import build_features, latest_feature_dict
 from trading_system.learning import LearningEngine
 from trading_system.models import WinProbabilityModel
 from trading_system.portfolio import Portfolio
 from trading_system.reports import maybe_rollover_daily_report, write_daily_report
 from trading_system.risk import RiskManager
-from trading_system.strategies import StrategyRegistry, compute_tight_stop_loss
+from trading_system.strategies import StrategyRegistry, compute_sl_from_margin_pct, compute_tight_stop_loss
 from trading_system.types import PortfolioSnapshot, RejectedSignal, Venue
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,7 @@ class TradingEngine:
             logger.info("Daily report written: %s", report_path)
 
         mark_prices: dict[str, float] = {}
+        feature_rows: dict[str, dict[str, Any]] = {}
         venue_health: dict[str, Any] = {}
 
         # Refill before trying new entries if flat & broke
@@ -131,6 +133,7 @@ class TradingEngine:
                     sym, self.cfg.timeframes.primary, self.cfg.timeframes.lookback_bars
                 )
                 mark_prices[sym] = float(df["close"].iloc[-1])
+                feature_rows[sym] = self._feature_row(df)
                 self._process_symbol(sym, Venue.CRYPTO, df)
             self.risk.mark_data("crypto", True)
             venue_health["crypto"] = self.crypto.health()
@@ -147,6 +150,7 @@ class TradingEngine:
                     sym, self.cfg.timeframes.primary, self.cfg.timeframes.lookback_bars
                 )
                 mark_prices[sym] = float(df["close"].iloc[-1])
+                feature_rows[sym] = self._feature_row(df)
                 if self.forex.is_tradable_now(sym):
                     self._process_symbol(sym, Venue.FOREX, df)
             self.risk.mark_data("forex", True)
@@ -160,6 +164,7 @@ class TradingEngine:
             mark_prices,
             forex_session_open=fx_open,
             close_fx_at_session_end=self.cfg.forex_session.close_intraday_at_session_end,
+            feature_rows=feature_rows,
         )
         for pos in closed:
             self.learning.on_trade_closed(pos)
@@ -186,6 +191,18 @@ class TradingEngine:
         self._last_snapshot = snap
         return snap
 
+    def _feature_row(self, df) -> dict[str, Any]:
+        cfg = self.cfg.strategy
+        feat = build_features(
+            df,
+            bb_period=cfg.bb_period,
+            bb_std=cfg.bb_std,
+            rsi_period=cfg.rsi_period,
+            macd_fast=cfg.macd_fast,
+            macd_slow=cfg.macd_slow,
+        )
+        return latest_feature_dict(feat)
+
     def _process_symbol(self, symbol: str, venue: Venue, df) -> None:
         strategy = self.strategies.get(self.cfg.strategy.name)
         signal = strategy.evaluate(symbol, venue, df, self.cfg.strategy)
@@ -193,18 +210,39 @@ class TradingEngine:
             return
 
         price = float(df["close"].iloc[-1])
+        margin = float(self.cfg.capital.base_trade_size)
+        leverage = max(1.0, float(self.cfg.execution.leverage or 1.0))
+        exit_fee_bps = (
+            self.cfg.execution.fee_bps + self.cfg.execution.slippage_bps
+            if getattr(self.cfg.strategy, "sl_include_exit_fees", True)
+            else 0.0
+        )
+        sl_mode = (getattr(self.cfg.strategy, "sl_mode", "margin_pct") or "margin_pct").lower()
 
-        # Recompute SL with exit-fee awareness (rr_from_tp uses TP; band uses BB width)
-        if signal.stop_loss is not None and (
-            getattr(self.cfg.strategy, "sl_include_exit_fees", True)
-            or (getattr(self.cfg.strategy, "sl_mode", "rr_from_tp") or "").lower()
-            == "rr_from_tp"
-        ):
-            exit_fee_bps = (
-                self.cfg.execution.fee_bps + self.cfg.execution.slippage_bps
-                if getattr(self.cfg.strategy, "sl_include_exit_fees", True)
-                else 0.0
+        # Recompute SL with live margin/leverage/fees
+        if sl_mode == "margin_pct":
+            sl, budget_bps, trigger_bps, budget_cash = compute_sl_from_margin_pct(
+                side=signal.side,
+                price=price,
+                margin=margin,
+                leverage=leverage,
+                sl_margin_pct=float(getattr(self.cfg.strategy, "sl_margin_pct", 4.0)),
+                exit_fee_bps=float(exit_fee_bps),
             )
+            signal.stop_loss = sl
+            signal.features["stop_loss"] = sl
+            signal.features["sl_budget_bps"] = budget_bps
+            signal.features["sl_trigger_bps"] = trigger_bps
+            signal.features["sl_budget_cash"] = budget_cash
+            signal.features["sl_exit_fee_bps"] = float(exit_fee_bps)
+            signal.features["sl_include_exit_fees"] = bool(
+                getattr(self.cfg.strategy, "sl_include_exit_fees", True)
+            )
+            signal.features["sl_mode"] = "margin_pct"
+            signal.features["sl_margin_pct"] = float(
+                getattr(self.cfg.strategy, "sl_margin_pct", 4.0)
+            )
+        elif signal.stop_loss is not None:
             bb_lo = signal.features.get("bb_lower")
             bb_hi = signal.features.get("bb_upper")
             if bb_lo is not None and bb_hi is not None:
@@ -216,26 +254,31 @@ class TradingEngine:
                     cfg=self.cfg.strategy,
                     exit_fee_bps=float(exit_fee_bps),
                     take_profit=signal.take_profit,
+                    margin=margin,
+                    leverage=leverage,
                 )
                 signal.stop_loss = sl
                 signal.features["stop_loss"] = sl
                 signal.features["sl_budget_bps"] = budget_bps
                 signal.features["sl_trigger_bps"] = trigger_bps
+                signal.features["sl_budget_cash"] = (
+                    margin * leverage * float(budget_bps) / 10_000.0
+                )
                 signal.features["sl_exit_fee_bps"] = float(exit_fee_bps)
                 signal.features["sl_include_exit_fees"] = bool(
                     getattr(self.cfg.strategy, "sl_include_exit_fees", True)
                 )
-                signal.features["sl_mode"] = getattr(
-                    self.cfg.strategy, "sl_mode", "rr_from_tp"
-                )
-                signal.features["tp_rr_multiple"] = float(
-                    getattr(self.cfg.strategy, "tp_rr_multiple", 1.5)
-                )
+                signal.features["sl_mode"] = sl_mode
 
-        # Soft fee-aware edge: hard-reject only suicide setups; thin edge still enters
+        # Soft fee-aware edge: use bb_mid distance as expected-move proxy when no fixed TP
+        edge_tp = signal.take_profit
+        if edge_tp is None:
+            mid = signal.features.get("bb_mid")
+            if mid is not None:
+                edge_tp = float(mid)
         edge = assess_entry_edge(
             price=price,
-            take_profit=signal.take_profit,
+            take_profit=edge_tp,
             fee_bps=self.cfg.execution.fee_bps,
             slippage_bps=self.cfg.execution.slippage_bps,
             hard_multiple=self.cfg.execution.hard_min_edge_multiple,
@@ -244,6 +287,7 @@ class TradingEngine:
         signal.features["edge_bps"] = edge.edge_bps
         signal.features["round_trip_cost_bps"] = edge.round_trip_cost_bps
         signal.features["edge_ratio"] = edge.ratio
+        signal.features["edge_proxy"] = "bb_mid" if signal.take_profit is None else "take_profit"
         if edge.hard_reject:
             self.db.insert_rejected(
                 RejectedSignal(
