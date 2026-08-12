@@ -375,6 +375,11 @@ class TradingEngine:
         latest_report = self.db.latest_daily_report()
         patterns_win = self.db.get_patterns("win")
         patterns_loss = self.db.get_patterns("loss")
+        from trading_system.learning.sessions import session_info
+
+        sess = session_info(buckets=self.cfg.learning.session_buckets)
+        learning_payload = self.learning.phase_progress(snap.total_trades if snap else 0)
+        learning_payload["session"] = sess
         return {
             "snapshot": snap.model_dump(mode="json"),
             "open_trades": open_pos,
@@ -390,7 +395,8 @@ class TradingEngine:
             "kill_reason": self.risk.kill_reason,
             "cycle": self._cycle,
             "mode": self.cfg.mode,
-            "learning": self.learning.phase_progress(snap.total_trades if snap else 0),
+            "learning": learning_payload,
+            "session": sess,
             "capital_resets": self.portfolio.capital_resets(),
             "daily_report": latest_report,
             "patterns": {

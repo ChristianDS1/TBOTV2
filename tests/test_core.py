@@ -402,9 +402,42 @@ def test_daily_report_sections(cfg, tmp_db, tmp_path):
     assert "Oportunidades" in text
     assert "Cambios implementados" in text
     assert "Progreso del aprendizaje" in text
+    assert "Ajustes activos" in text
+    assert "Resumen por horario" in text
+    assert "take_profit=" in text
+    assert "stop_loss=" in text
     assert "Decisión:" in text
     assert "Repeticiones" in text
     assert tmp_db.latest_daily_report() is not None
+
+
+def test_daily_report_session_breakdown(cfg, tmp_db, tmp_path):
+    from trading_system.reports import write_daily_report
+
+    le = LearningEngine(cfg.learning, tmp_db)
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # asia-hour trade
+    pos = _closed_pos(pnl=-0.1, exit_reason="stop_loss")
+    pos.entry_time = datetime(2026, 8, 12, 3, 0, tzinfo=timezone.utc)
+    pos.exit_time = datetime(2026, 8, 12, 3, 5, tzinfo=timezone.utc)
+    pos.id = tmp_db.insert_trade(pos)
+    le.on_trade_closed(pos)
+    # europe-hour TP
+    pos2 = _closed_pos(pnl=0.05, exit_reason="take_profit", regime="ranging")
+    pos2.entry_time = datetime(2026, 8, 12, 9, 0, tzinfo=timezone.utc)
+    pos2.exit_time = datetime(2026, 8, 12, 9, 2, tzinfo=timezone.utc)
+    pos2.id = tmp_db.insert_trade(pos2)
+    le.on_trade_closed(pos2)
+
+    path = write_daily_report(db=tmp_db, learning=le, out_dir=tmp_path, day=day)
+    text = path.read_text(encoding="utf-8")
+    assert "`asia`" in text
+    assert "`europe`" in text
+    assert "00:00–07:00 UTC" in text or "00:00" in text
+    assert "Patrones confirmados de ganancia" in text
+    assert "Cambios / efectos aplicados" in text
+    summary = tmp_db.latest_daily_report()
+    assert summary is not None
 
 
 def test_report_shows_accept_reject_reasons(cfg, tmp_db, tmp_path):

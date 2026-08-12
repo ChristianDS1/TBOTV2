@@ -44,6 +44,52 @@
       font-weight: 600;
     }
     header .meta { color: var(--muted); font-size: 0.85rem; font-family: var(--mono); }
+    .session-banner {
+      margin: 0.85rem 1.5rem 0;
+      padding: 0.85rem 1.1rem;
+      border: 1px solid #2a4a3a;
+      background:
+        linear-gradient(90deg, rgba(62, 207, 142, 0.12), rgba(20, 28, 39, 0.9) 55%);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem 1.5rem;
+      align-items: center;
+    }
+    .session-banner .sess-name {
+      font-size: 1.25rem;
+      font-family: var(--mono);
+      color: var(--accent);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    .session-banner .sess-hours {
+      font-family: var(--mono);
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+    .session-banner .sess-meta {
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-family: var(--mono);
+    }
+    .session-banner .sess-pills {
+      margin-left: auto;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+    }
+    .session-banner .sess-pill {
+      border: 1px solid var(--line);
+      padding: 0.15rem 0.45rem;
+      font-size: 0.7rem;
+      font-family: var(--mono);
+      color: var(--muted);
+    }
+    .session-banner .sess-pill.active {
+      color: var(--accent);
+      border-color: #2a6b4e;
+      background: rgba(62, 207, 142, 0.08);
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -114,6 +160,15 @@
     <h1>T-BOT Adaptive Monitor</h1>
     <div class="meta" id="clock">—</div>
   </header>
+  <div class="session-banner" id="sessionBanner">
+    <div>
+      <div class="label" style="color:var(--muted);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.08em;">Operating session (UTC)</div>
+      <div class="sess-name" id="sessName">—</div>
+    </div>
+    <div class="sess-hours" id="sessHours">—</div>
+    <div class="sess-meta" id="sessMeta">—</div>
+    <div class="sess-pills" id="sessPills"></div>
+  </div>
   <div class="grid" id="metrics"></div>
   <main>
     <section>
@@ -162,6 +217,16 @@
         const data = await res.json();
         const s = data.snapshot || {};
         const pnlCls = (s.realized_pnl || 0) >= 0 ? "pos" : "neg";
+        const sess = data.session || (data.learning && data.learning.session) || {};
+        document.getElementById("sessName").textContent = (sess.name || "—").toUpperCase();
+        document.getElementById("sessHours").textContent = sess.hours || "—";
+        document.getElementById("sessMeta").textContent =
+          `now ${sess.utc_now || "—"} UTC · aware=${(data.learning||{}).session_aware !== false}`;
+        const pills = (sess.buckets || []).map(b =>
+          `<span class="sess-pill ${b.name === sess.name ? "active" : ""}">${b.name} ${b.hours}</span>`
+        ).join("");
+        document.getElementById("sessPills").innerHTML = pills || "";
+
         document.getElementById("metrics").innerHTML = [
           metric("Equity", fmt(s.equity, 2) + " €"),
           metric("Cash", fmt(s.cash, 2) + " €"),
@@ -239,9 +304,9 @@
         const kill = data.kill_reason ? ` | <span class="kill">${data.kill_reason}</span>` : "";
         const dr = data.daily_report || {};
         const thr = (data.patterns && data.patterns.threshold) || 20;
-        const sess = (data.learning && data.learning.current_session) || "—";
+        const sessName = sess.name || "—";
         document.getElementById("status").innerHTML =
-          `status=${data.status} | mode=${data.mode} | cycle=${data.cycle} | session=${sess} | resets=${data.capital_resets ?? 0} | pattern≥${thr} | last_report=${dr.day || "—"} | refresh=5s${kill}`;
+          `status=${data.status} | mode=${data.mode} | cycle=${data.cycle} | session=${sessName} ${sess.hours || ""} | resets=${data.capital_resets ?? 0} | pattern≥${thr} | last_report=${dr.day || "—"} | refresh=5s${kill}`;
         document.getElementById("clock").textContent = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
       } catch (e) {
         document.getElementById("status").textContent = "monitor fetch failed: " + e;

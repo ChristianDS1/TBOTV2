@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.9
+
+- Monitor session banner (current UTC region + hours)
+- Daily report: active adjustments context + per-session winrate/TP/SL/patterns/changes
+
 ## 0.1.8
 
 - Stop-loss budget is fee-aware (max NET loss); take-profit math unchanged

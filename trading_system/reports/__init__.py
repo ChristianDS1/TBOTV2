@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from trading_system.config import ROOT
+from trading_system.config import ROOT, LearningConfig, SessionBucketConfig
 from trading_system.database import Database
-from trading_system.learning import LearningEngine
+from trading_system.learning import LearningEngine, trade_session
+from trading_system.learning.sessions import (
+    DEFAULT_SESSION_BUCKETS,
+    pattern_session_name,
+    session_hours_label,
+)
+from trading_system.types import Position
 
 
 def _pattern_decision_block(
@@ -61,6 +68,146 @@ def _pattern_decision_block(
     return lines
 
 
+def _session_buckets(learning: LearningEngine | None) -> list[SessionBucketConfig]:
+    if learning is not None and learning.cfg.session_buckets:
+        return list(learning.cfg.session_buckets)
+    return list(DEFAULT_SESSION_BUCKETS)
+
+
+def _learning_cfg(learning: LearningEngine | None) -> LearningConfig:
+    if learning is not None:
+        return learning.cfg
+    return LearningConfig()
+
+
+def _session_trade_stats(
+    trades: list[Position],
+    cfg: LearningConfig,
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    by: dict[str, list[Position]] = defaultdict(list)
+    for t in trades:
+        by[trade_session(t, cfg)].append(t)
+
+    for name, items in by.items():
+        n = len(items)
+        wins = [t for t in items if (t.pnl or 0) > 0]
+        losses = [t for t in items if (t.pnl or 0) <= 0]
+        tp = sum(1 for t in items if t.exit_reason == "take_profit")
+        sl = sum(1 for t in items if t.exit_reason == "stop_loss")
+        ts = sum(1 for t in items if t.exit_reason == "time_stop")
+        liq = sum(1 for t in items if t.exit_reason == "liquidation")
+        pnl = sum(t.pnl or 0 for t in items)
+        wr = len(wins) / n if n else 0.0
+        out[name] = {
+            "trades": n,
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate": wr,
+            "pnl": pnl,
+            "take_profit": tp,
+            "stop_loss": sl,
+            "time_stop": ts,
+            "liquidation": liq,
+        }
+    return out
+
+
+def _filter_patterns_for_session(
+    patterns: list[dict[str, Any]], session: str
+) -> list[dict[str, Any]]:
+    prefix = f"session={session}"
+    return [
+        p
+        for p in patterns
+        if p.get("pattern_key", "").startswith(prefix + "|")
+        or p.get("pattern_key") == prefix
+    ]
+
+
+def _filter_changes_for_session(
+    changes: list[dict[str, Any]], session: str
+) -> list[dict[str, Any]]:
+    prefix = f"session={session}"
+    return [
+        c
+        for c in changes
+        if str(c.get("pattern_key", "")).startswith(prefix + "|")
+        or str(c.get("pattern_key", "")) == prefix
+    ]
+
+
+def _session_report_section(
+    *,
+    buckets: list[SessionBucketConfig],
+    day_trades: list[Position],
+    cfg: LearningConfig,
+    win_patterns: list[dict[str, Any]],
+    loss_patterns: list[dict[str, Any]],
+    changes: list[dict[str, Any]],
+    threshold: int,
+) -> list[str]:
+    lines: list[str] = [
+        "",
+        "## 6. Resumen por horario / región (UTC)",
+        "",
+        "Cada bloque usa `entry_time` del trade para asignar sesión. "
+        "Patrones y cambios listados son los scoped a esa sesión "
+        "(`session=<name>|…`).",
+        "",
+    ]
+    stats = _session_trade_stats(day_trades, cfg)
+    confirmed_wins = [p for p in win_patterns if p.get("status") == "confirmed"]
+    confirmed_losses = [p for p in loss_patterns if p.get("status") == "confirmed"]
+
+    for b in buckets:
+        name = b.name
+        hours = session_hours_label(b)
+        st = stats.get(
+            name,
+            {
+                "trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "win_rate": 0.0,
+                "pnl": 0.0,
+                "take_profit": 0,
+                "stop_loss": 0,
+                "time_stop": 0,
+                "liquidation": 0,
+            },
+        )
+        lines += [
+            f"### `{name}` ({hours})",
+            f"- Trades: **{st['trades']}** (W {st['wins']} / L {st['losses']})",
+            f"- Win rate: **{st['win_rate']:.1%}** | PnL sesión: **{st['pnl']:.4f}**",
+            f"- Exits: take_profit=**{st['take_profit']}** | stop_loss=**{st['stop_loss']}** "
+            f"| time_stop=**{st['time_stop']}** | liquidation=**{st['liquidation']}**",
+            "",
+            "#### Patrones confirmados de ganancia",
+        ]
+        sess_wins = _filter_patterns_for_session(confirmed_wins, name)
+        lines += _pattern_decision_block(
+            sess_wins, threshold=threshold, direction="win", confirmed=True, limit=10
+        )
+        lines += ["", "#### Patrones confirmados de pérdida"]
+        sess_losses = _filter_patterns_for_session(confirmed_losses, name)
+        lines += _pattern_decision_block(
+            sess_losses, threshold=threshold, direction="loss", confirmed=True, limit=10
+        )
+        lines += ["", "#### Cambios / efectos aplicados (estrategia·indicador)"]
+        sess_changes = _filter_changes_for_session(changes, name)
+        if sess_changes:
+            for c in sess_changes:
+                lines.append(
+                    f"- [{c['action']}] `{c['pattern_key']}` ({c['direction']}): {c['detail']}"
+                )
+        else:
+            lines.append("- Ninguno en esta sesión hoy.")
+        lines.append("")
+    return lines
+
+
 def write_daily_report(
     db: Database,
     learning: LearningEngine | None = None,
@@ -80,6 +227,8 @@ def write_daily_report(
     win_patterns = db.get_patterns(direction="win")
     loss_patterns = db.get_patterns(direction="loss")
     rejected = db.recent_rejected(50)
+    cfg = _learning_cfg(learning)
+    buckets = _session_buckets(learning)
 
     wins = [t for t in day_trades if (t.pnl or 0) > 0]
     losses = [t for t in day_trades if (t.pnl or 0) <= 0]
@@ -92,9 +241,8 @@ def write_daily_report(
     observing_wins = [p for p in win_patterns if p["status"] == "observing"]
     observing_losses = [p for p in loss_patterns if p["status"] == "observing"]
 
-    threshold = 20
+    threshold = cfg.pattern_min_occurrences
     if learning is not None:
-        threshold = learning.cfg.pattern_min_occurrences
         progress = learning.phase_progress(len(all_closed))
     else:
         progress = {
@@ -102,23 +250,41 @@ def write_daily_report(
             "exploration_ratio": 0,
             "confirmed_wins": len(confirmed_wins),
             "confirmed_losses": len(confirmed_losses),
+            "session_aware": cfg.session_aware,
+            "current_session": "—",
         }
 
     resets = int(db.get_state("capital_resets") or "0")
     cash = db.get_state("cash") or "?"
 
+    tp_n = sum(1 for t in day_trades if t.exit_reason == "take_profit")
+    sl_n = sum(1 for t in day_trades if t.exit_reason == "stop_loss")
+    ts_n = sum(1 for t in day_trades if t.exit_reason == "time_stop")
+
     lines = [
         f"# Daily Learning Report — {day}",
+        "",
+        "## 0. Ajustes activos (contexto reciente)",
+        "- Session-aware learning: patrones win/loss por bucket UTC "
+        f"({'ON' if cfg.session_aware else 'OFF'})",
+        "- Stop-loss fee-aware: budget = pérdida neta máx. (incluye fee de salida); TP sin cambio",
+        "- Take-profit: early rejection (`tp_band_fraction` / `tp_min_bps`), no BB mid",
+        "- Hold adaptativo: ventana preferida ~3m, máx 10m si sigue progresando al TP",
+        "- Rejection candle obligatoria + no entrar si ya se alejó demasiado del extremo",
+        "- Paper leverage/margin según config (fees/PnL sobre notional)",
+        "- Monitor: entry/exit px + etiqueta aprendizaje ganancia/pérdida; banner de sesión",
         "",
         "## 1. Aprendizaje del día",
         f"- Closed trades today: **{len(day_trades)}** (W {len(wins)} / L {len(losses)})",
         f"- Win rate today: **{wr:.1%}** | Expectancy: **{exp:.4f}** | Day PnL: **{day_pnl:.4f}**",
+        f"- Exits hoy: take_profit=**{tp_n}** | stop_loss=**{sl_n}** | time_stop=**{ts_n}**",
         f"- Learning phase: **{progress.get('suggested_phase')}**",
         f"- Exploration ratio: **{float(progress.get('exploration_ratio') or 0):.1%}**",
+        f"- Current session (al generar): **{progress.get('current_session', '—')}**",
         f"- Lifetime closed trades: **{len(all_closed)}**",
         "",
         "> Nota: los patrones de aprendizaje son keys contextuales "
-        "(`regime`, `symbol`, `exit_reason`, etc.), **no** el paquete completo "
+        "(`session|regime`, `symbol`, `exit_reason`, etc.), **no** el paquete completo "
         "de los 5 indicadores de entrada. Una loss confirmada penaliza/rechaza "
         "solo esa key, no marca BB+RSI+MACD+rejection como inválidos en bloque. "
         "Win/loss de estrategia usa **gross/TP**, no net cash; "
@@ -179,8 +345,10 @@ def write_daily_report(
     ]
     if changes:
         for c in changes:
+            sess = pattern_session_name(str(c.get("pattern_key") or "")) or "—"
             lines.append(
-                f"- [{c['action']}] `{c['pattern_key']}` ({c['direction']}): {c['detail']}"
+                f"- [{c['action']}] session=`{sess}` `{c['pattern_key']}` "
+                f"({c['direction']}): {c['detail']}"
             )
     else:
         lines.append("- Ninguno (sin patrones nuevos confirmados hoy).")
@@ -225,6 +393,16 @@ def write_daily_report(
     if not rejected:
         lines.append("- Ninguna.")
 
+    lines += _session_report_section(
+        buckets=buckets,
+        day_trades=day_trades,
+        cfg=cfg,
+        win_patterns=win_patterns,
+        loss_patterns=loss_patterns,
+        changes=changes,
+        threshold=threshold,
+    )
+
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     summary: dict[str, Any] = {
@@ -239,6 +417,8 @@ def write_daily_report(
         "changes": len(changes),
         "capital_resets": resets,
         "phase": progress.get("suggested_phase"),
+        "exits": {"take_profit": tp_n, "stop_loss": sl_n, "time_stop": ts_n},
+        "by_session": _session_trade_stats(day_trades, cfg),
     }
     db.save_daily_report(day, str(path), summary)
     return path
