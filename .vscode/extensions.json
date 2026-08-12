@@ -1,6 +1,3 @@
 {
-  "recommendations": [
-    "qwtel.sqlite-viewer",
-    "alexcvzz.vscode-sqlite"
-  ]
+  "recommendations": ["qwtel.sqlite-viewer"]
 }
