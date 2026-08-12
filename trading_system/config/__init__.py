@@ -36,6 +36,10 @@ class StrategyConfig(BaseModel):
     min_conditions: int = 3
     require_rejection_candle: bool = True
     max_extreme_retrace_pct: float = 0.35
+    tp_mode: str = "band_fraction"  # band_fraction | fixed_bps (never bb_mid)
+    tp_band_fraction: float = 0.25
+    tp_min_bps: float = 12.0
+    tp_fixed_bps: float = 15.0
     bb_period: int = 20
     bb_std: float = 2.0
     rsi_period: int = 10

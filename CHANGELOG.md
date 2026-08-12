@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- Take-profit no longer uses BB mid; early rejection target (`tp_band_fraction` / `tp_min_bps`) for crypto and forex
+
 ## 0.1.2
 
 - Rejection candle hard-required; keep 3/5 otherwise

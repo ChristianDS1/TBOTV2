@@ -7,7 +7,7 @@
 - Max simultaneous positions: 5 (configurable).
 - Correlation groups: crypto majors / USD FX pairs.
 - **No** daily loss kill — bot keeps collecting data.
-- Exits: take-profit (BB mid), time stop, soft liquidation, FX session end.
+- Exits: take-profit (early rejection target, **not** BB mid), time stop, soft liquidation, FX session end.
 
 ## Paper leverage model
 
@@ -31,7 +31,7 @@ Does **not** wipe learned patterns / history.
 
 - Hard-reject only if distance to TP &lt; `hard_min_edge_multiple ×` round-trip cost
 - Soft zone below `soft_min_edge_multiple`: still enters, −8 confidence (`thin_edge`)
-- Take-profit close deferred unless estimated **net PnL &gt; 0** (strict; not ≥ 0). Hold until better or `time_stop` (default **10m**)
+- Take-profit close deferred unless estimated **net PnL &gt; 0** (strict; not ≥ 0). Hold until better or `time_stop` (default **10m**). TP distance is the early-rejection target, not BB mid.
 
 ## Kill switch (technical)
 

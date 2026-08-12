@@ -19,7 +19,12 @@ Enter when ≥ `min_conditions` (default 3) **and**:
 - `require_rejection_candle: true` → rejection candle is a hard gate  
 - close still near the extreme (`max_extreme_retrace_pct`, default 0.35 of band width toward mid)
 
-Target: BB midline. Max hold: **10** minutes (1–10m scalping window).
+**Take profit is NOT the BB midline.** Target is an early rejection scalp:
+- `tp_mode: band_fraction` → move ≈ `tp_band_fraction` × band width toward mid (default 0.25)
+- floored by `tp_min_bps` (default 12) so fees are learnable
+- clamped short of mid so we never wait for a full mean reversion
+
+Max hold: **10** minutes (1–10m scalping window).
 
 ### PUT (short)
 

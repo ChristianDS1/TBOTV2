@@ -158,7 +158,7 @@ class Backtester:
                         open_trade = {
                             "side": sig.side.value,
                             "entry": price,
-                            "tp": sig.take_profit or float(row["bb_mid"]),
+                            "tp": sig.take_profit or price,
                             "entry_i": i,
                             "confidence": sig.confidence,
                             "symbol": symbol,

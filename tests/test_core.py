@@ -644,7 +644,7 @@ def test_leverage_scales_notional_and_fees(cfg, tmp_db):
 
 
 def test_near_extreme_and_rejection_required(cfg):
-    from trading_system.strategies import _near_extreme
+    from trading_system.strategies import _near_extreme, compute_early_rejection_tp
     from trading_system.types import Side
 
     row = pd.Series(
@@ -662,6 +662,28 @@ def test_near_extreme_and_rejection_required(cfg):
     assert _near_extreme(row, Side.PUT, 0.35) is True
     row["close"] = 103.0
     assert _near_extreme(row, Side.PUT, 0.35) is False
+
+    # TP is early rejection — short of BB mid
+    tp_call = compute_early_rejection_tp(
+        side=Side.CALL,
+        price=100.5,
+        bb_lower=100.0,
+        bb_mid=105.0,
+        bb_upper=110.0,
+        cfg=cfg.strategy,
+    )
+    assert tp_call > 100.5
+    assert tp_call < 105.0
+    tp_put = compute_early_rejection_tp(
+        side=Side.PUT,
+        price=109.5,
+        bb_lower=100.0,
+        bb_mid=105.0,
+        bb_upper=110.0,
+        cfg=cfg.strategy,
+    )
+    assert tp_put < 109.5
+    assert tp_put > 105.0
 
 
 def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):

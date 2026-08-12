@@ -167,7 +167,7 @@ class PaperExecutor:
                     if (not require_pos_net) or ok_net:
                         closed.append(self.close_trade(pos, px, "take_profit"))
                         continue
-                    # Hit BB mid but net would be <= 0 — hold for better or time_stop
+                    # Hit early-rejection TP but net would be <= 0 — hold for better or time_stop
                     logger.debug(
                         "TP deferred (net not > 0) %s %s mark=%.6f",
                         pos.side.value,

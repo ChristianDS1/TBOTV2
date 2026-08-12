@@ -43,6 +43,40 @@ def _near_extreme(row: pd.Series, side: Side, max_retrace: float) -> bool:
     return (upper - close) / width <= max_retrace
 
 
+def compute_early_rejection_tp(
+    *,
+    side: Side,
+    price: float,
+    bb_lower: float,
+    bb_mid: float,
+    bb_upper: float,
+    cfg: StrategyConfig,
+) -> float:
+    """
+    Short TP for early rejection scalp — NEVER BB mid.
+    Default: move = max(tp_band_fraction * band_width, tp_min_bps of price) toward mid,
+    then clamp so TP stays short of the midline.
+    """
+    width = max(0.0, bb_upper - bb_lower)
+    min_move = price * float(cfg.tp_min_bps) / 10_000.0
+    mode = (cfg.tp_mode or "band_fraction").lower()
+    if mode == "fixed_bps":
+        move = price * float(cfg.tp_fixed_bps) / 10_000.0
+    else:
+        move = max(width * float(cfg.tp_band_fraction), min_move)
+
+    # Keep target in the early half toward mid (never at/beyond mid)
+    if side == Side.CALL:
+        room = max(0.0, bb_mid - price)
+        if room > 0:
+            move = min(move, room * 0.85)
+        return price + max(move, min_move * 0.5)
+    room = max(0.0, price - bb_mid)
+    if room > 0:
+        move = min(move, room * 0.85)
+    return price - max(move, min_move * 0.5)
+
+
 class BBMeanReversionStrategy(Strategy):
     """Expansion → overextension → mean reversion (Estrategia.txt)."""
 
@@ -173,7 +207,19 @@ class BBMeanReversionStrategy(Strategy):
         if cfg.discovery_phase is False and confidence < cfg.entry_confidence_floor:
             return None
 
-        tp = float(row["bb_mid"])
+        price = float(row["close"])
+        tp = compute_early_rejection_tp(
+            side=side,
+            price=price,
+            bb_lower=lower,
+            bb_mid=float(row["bb_mid"]),
+            bb_upper=upper,
+            cfg=cfg,
+        )
+        features["tp_mode"] = cfg.tp_mode
+        features["tp_band_fraction"] = float(cfg.tp_band_fraction)
+        features["bb_mid"] = float(row["bb_mid"])
+        features["take_profit"] = tp
         return Signal(
             symbol=symbol,
             venue=venue,

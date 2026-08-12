@@ -12,6 +12,9 @@
 | `strategy.min_conditions` | Entry threshold (default 3) |
 | `strategy.require_rejection_candle` | Rejection wick hard-required |
 | `strategy.max_extreme_retrace_pct` | Max distance from extreme toward mid (fraction of band width) |
+| `strategy.tp_mode` | `band_fraction` (default) or `fixed_bps` — never BB mid |
+| `strategy.tp_band_fraction` | Early rejection TP as fraction of band width (default 0.25) |
+| `strategy.tp_min_bps` | Minimum TP distance in bps |
 | `strategy.max_hold_minutes` | Time stop (default 10) |
 | `learning.exploration_budget` | Explore fraction |
 | `learning.pattern_min_occurrences` | Confirm win/loss patterns only at ≥N (default 20) |
