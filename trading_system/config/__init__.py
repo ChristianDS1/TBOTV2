@@ -56,6 +56,12 @@ class StrategyConfig(BaseModel):
     entry_confidence_floor: float = 0
 
 
+class SessionBucketConfig(BaseModel):
+    name: str
+    start_hour_utc: float  # inclusive
+    end_hour_utc: float  # exclusive (use 24 for end-of-day)
+
+
 class LearningConfig(BaseModel):
     phase: str = "discovery"
     exploration_budget: float = 0.25
@@ -66,6 +72,17 @@ class LearningConfig(BaseModel):
     loss_soft_reject: bool = True
     soft_reject_exclude_key_prefixes: list[str] = Field(
         default_factory=lambda: ["strategy="]
+    )
+    # Pattern evidence and confidence effects scoped by UTC session buckets
+    session_aware: bool = True
+    session_buckets: list[SessionBucketConfig] = Field(
+        default_factory=lambda: [
+            SessionBucketConfig(name="asia", start_hour_utc=0.0, end_hour_utc=7.0),
+            SessionBucketConfig(name="europe", start_hour_utc=7.0, end_hour_utc=12.0),
+            SessionBucketConfig(name="us_open", start_hour_utc=12.0, end_hour_utc=16.0),
+            SessionBucketConfig(name="us_afternoon", start_hour_utc=16.0, end_hour_utc=21.0),
+            SessionBucketConfig(name="night", start_hour_utc=21.0, end_hour_utc=24.0),
+        ]
     )
     retrain_every_n_trades: int = 50
     recency_half_life_trades: int = 100

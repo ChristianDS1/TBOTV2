@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.7
+
+- Session-aware pattern learning (UTC buckets); no cross-session win/loss bleed
+- Monitor shows current session
+
 ## 0.1.6
 
 - Add tight stop_loss (`sl_min_bps` 10 / `sl_band_fraction` 0.12) to cut large adverse losses

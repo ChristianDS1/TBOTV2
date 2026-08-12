@@ -65,6 +65,14 @@ learning:
   # Rollback: set to [] to restore old behavior that rejected on strategy=...
   soft_reject_exclude_key_prefixes:
     - "strategy="
+  # Session-aware learning: patterns confirm/apply per UTC time bucket (no cross-session bleed)
+  session_aware: true
+  session_buckets:
+    - { name: asia, start_hour_utc: 0, end_hour_utc: 7 }
+    - { name: europe, start_hour_utc: 7, end_hour_utc: 12 }
+    - { name: us_open, start_hour_utc: 12, end_hour_utc: 16 }
+    - { name: us_afternoon, start_hour_utc: 16, end_hour_utc: 21 }
+    - { name: night, start_hour_utc: 21, end_hour_utc: 24 }
   retrain_every_n_trades: 50
   recency_half_life_trades: 100
 

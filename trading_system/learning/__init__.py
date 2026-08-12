@@ -10,6 +10,7 @@ import numpy as np
 
 from trading_system.config import LearningConfig
 from trading_system.database import Database
+from trading_system.learning.sessions import session_bucket, with_session
 from trading_system.types import Position, Signal
 
 
@@ -76,8 +77,15 @@ def confidence_bucket(confidence: float) -> str:
     return f"{lo}-{lo + 5}"
 
 
-def pattern_keys_from_trade(pos: Position) -> list[str]:
-    keys = [
+def trade_session(pos: Position, cfg: LearningConfig) -> str:
+    ts = pos.entry_time or pos.exit_time or datetime.now(timezone.utc)
+    if not cfg.session_aware:
+        return "all"
+    return session_bucket(ts, cfg.session_buckets)
+
+
+def pattern_keys_from_trade(pos: Position, cfg: LearningConfig | None = None) -> list[str]:
+    base = [
         f"regime={pos.regime}",
         f"symbol={pos.symbol}",
         f"exit_reason={pos.exit_reason or 'unknown'}",
@@ -85,7 +93,12 @@ def pattern_keys_from_trade(pos: Position) -> list[str]:
         f"strategy={pos.strategy}",
         f"regime={pos.regime}|exit={pos.exit_reason or 'unknown'}",
     ]
-    return keys
+    if cfg is None or not cfg.session_aware:
+        return base
+    sess = trade_session(pos, cfg)
+    scoped = [with_session(sess, k) for k in base]
+    scoped.append(f"session={sess}")
+    return scoped
 
 
 def classify_strategy_outcome(pos: Position) -> tuple[str, bool]:
@@ -129,13 +142,31 @@ def learning_display(pos: Position) -> dict[str, Any]:
     }
 
 
-def signal_pattern_keys(signal: Signal) -> list[str]:
-    return [
+def signal_pattern_keys(signal: Signal, cfg: LearningConfig | None = None) -> list[str]:
+    base = [
         f"regime={signal.regime.value}",
         f"symbol={signal.symbol}",
         f"confidence_bucket={confidence_bucket(signal.confidence)}",
         f"strategy={signal.strategy}",
     ]
+    if cfg is None or not cfg.session_aware:
+        return base
+    ts = signal.timestamp or datetime.now(timezone.utc)
+    sess = session_bucket(ts, cfg.session_buckets)
+    signal.features["session"] = sess
+    scoped = [with_session(sess, k) for k in base]
+    scoped.append(f"session={sess}")
+    return scoped
+
+
+def _soft_reject_excluded(key: str, exclude_prefixes: list[str]) -> bool:
+    # Bare session key is too broad (would halt whole session)
+    if key.startswith("session=") and "|" not in key:
+        return True
+    for p in exclude_prefixes:
+        if key.startswith(p) or f"|{p}" in key:
+            return True
+    return False
 
 
 class LearningEngine:
@@ -154,6 +185,11 @@ class LearningEngine:
             return self.cfg.exploration_budget
         return self.exploration_count / total
 
+    def current_session(self, ts: datetime | None = None) -> str:
+        if not self.cfg.session_aware:
+            return "all"
+        return session_bucket(ts, self.cfg.session_buckets)
+
     def on_trade_closed(self, pos: Position) -> list[dict[str, Any]]:
         """Record evidence; confirm patterns only at >= pattern_min_occurrences."""
         self._trades_since_retrain += 1
@@ -164,6 +200,7 @@ class LearningEngine:
         now = datetime.now(timezone.utc).isoformat()
         threshold = self.cfg.pattern_min_occurrences
         newly_confirmed: list[dict[str, Any]] = []
+        sess = trade_session(pos, self.cfg)
 
         label = "WIN" if direction == "win" else "LOSS"
         erosion_note = (
@@ -173,7 +210,7 @@ class LearningEngine:
             "trade_observation",
             (
                 f"{label}(strategy) {pos.strategy} {pos.symbol} "
-                f"regime={pos.regime} conf={pos.confidence:.1f} "
+                f"session={sess} regime={pos.regime} conf={pos.confidence:.1f} "
                 f"gross={pos.gross_pnl} net={pos.pnl} exit={pos.exit_reason}"
                 f"{erosion_note}"
             ),
@@ -183,6 +220,7 @@ class LearningEngine:
                 "cost_erosion": cost_erosion,
                 "gross_pnl": pos.gross_pnl,
                 "net_pnl": pos.pnl,
+                "session": sess,
             },
         )
 
@@ -190,6 +228,8 @@ class LearningEngine:
             cost_key = (
                 f"cost_erosion|exit={pos.exit_reason or 'unknown'}|symbol={pos.symbol}"
             )
+            if self.cfg.session_aware:
+                cost_key = with_session(sess, cost_key)
             ev = self.db.increment_pattern(cost_key, "cost_erosion", now)
             count = int(ev["count"])
             if count >= threshold and ev["status"] != "confirmed":
@@ -225,7 +265,7 @@ class LearningEngine:
                     }
                 )
 
-        for key in pattern_keys_from_trade(pos):
+        for key in pattern_keys_from_trade(pos, self.cfg):
             ev = self.db.increment_pattern(key, direction, now)
             count = int(ev["count"])
             status = ev["status"]
@@ -241,7 +281,7 @@ class LearningEngine:
                     f"ACEPTADO como patrón {direction}: la key '{key}' se repitió "
                     f"{count} veces (≥ umbral {threshold}). "
                     f"Clasificación por señal/gross (no por net cash). "
-                    f"Scope: solo esta condición contextual — NO invalida los 5 "
+                    f"Scope: sesión/contexto de esta key — NO invalida los 5 "
                     f"indicadores de entrada (BB/RSI/MACD/rejection) en bloque. "
                     f"Efecto aplicado: {action_info['action']}."
                 )
@@ -270,6 +310,7 @@ class LearningEngine:
                         "count": count,
                         "threshold": threshold,
                         "action": action_info["action"],
+                        "session": sess,
                     },
                 )
 
@@ -332,9 +373,14 @@ class LearningEngine:
         Adjust signal confidence from confirmed patterns.
         Returns (signal, soft_reject_reason|None).
         Win patterns: boost only. Loss patterns: penalty and optional soft-reject.
+        Session-aware: only keys for the current UTC session apply.
         """
-        keys = set(signal_pattern_keys(signal))
-        keys.add(f"regime={signal.regime.value}")
+        keys = set(signal_pattern_keys(signal, self.cfg))
+        if not self.cfg.session_aware:
+            keys.add(f"regime={signal.regime.value}")
+
+        sess = signal.features.get("session") or self.current_session(signal.timestamp)
+        signal.features["session"] = sess
 
         confirmed_wins = {
             p["pattern_key"]
@@ -344,10 +390,18 @@ class LearningEngine:
             p["pattern_key"]
             for p in self.db.get_patterns(direction="loss", status="confirmed")
         }
-        exclude_prefixes = list(self.cfg.soft_reject_exclude_key_prefixes or [])
+        # Never apply another session's confirmed keys
+        if self.cfg.session_aware:
+            prefix = f"session={sess}|"
+            bare = f"session={sess}"
+            confirmed_wins = {
+                k for k in confirmed_wins if k.startswith(prefix) or k == bare
+            }
+            confirmed_losses = {
+                k for k in confirmed_losses if k.startswith(prefix) or k == bare
+            }
 
-        def _soft_reject_excluded(key: str) -> bool:
-            return any(key.startswith(p) for p in exclude_prefixes)
+        exclude_prefixes = list(self.cfg.soft_reject_exclude_key_prefixes or [])
 
         boost = 0.0
         penalty = 0.0
@@ -360,11 +414,9 @@ class LearningEngine:
                 penalty = max(penalty, self.cfg.loss_confidence_penalty)
                 if not self.cfg.loss_soft_reject:
                     continue
-                if _soft_reject_excluded(k):
-                    # Too broad (e.g. strategy=...) — never halt the whole bot
+                if _soft_reject_excluded(k, exclude_prefixes):
                     continue
                 if k in confirmed_wins:
-                    # Ambiguous key confirmed both ways — do not soft-reject
                     continue
                 reject_reason = f"confirmed_loss_pattern:{k}"
 
@@ -405,4 +457,6 @@ class LearningEngine:
             "confirmed_wins": len(self.db.get_patterns("win", "confirmed")),
             "confirmed_losses": len(self.db.get_patterns("loss", "confirmed")),
             "observing_patterns": len(self.db.get_patterns(status="observing")),
+            "session_aware": self.cfg.session_aware,
+            "current_session": self.current_session(),
         }

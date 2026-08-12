@@ -23,6 +23,8 @@
 | `learning.exploration_budget` | Explore fraction |
 | `learning.pattern_min_occurrences` | Confirm win/loss patterns only at ≥N (default 20) |
 | `learning.win_confidence_boost` | Confidence-only effect for confirmed wins |
+| `learning.session_aware` | Scope pattern evidence/effects by UTC session (default true) |
+| `learning.session_buckets` | Named UTC hour ranges (asia/europe/us_open/us_afternoon/night) |
 | `capital_policy.auto_refill` | Top up paper capital when flat & broke |
 | `risk.soft_mode` | No daily kill |
 | `forex_session.*` | UTC session window |

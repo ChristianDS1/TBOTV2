@@ -4,9 +4,27 @@
 
 discovery → pattern → optimization → exploitation (suggested by trade count; config sets starting phase).
 
+## Session-aware patterns (UTC)
+
+Pattern evidence is scoped by time-of-day bucket so night results do not contaminate morning (and vice versa).
+
+Default buckets (UTC):
+
+| Session | Hours |
+|---|---|
+| `asia` | 00–07 |
+| `europe` | 07–12 |
+| `us_open` | 12–16 |
+| `us_afternoon` | 16–21 |
+| `night` | 21–24 |
+
+Keys look like `session=europe|regime=low_vol`. Confirmed effects (boost / soft-reject) apply **only** in the matching session. Changing session = re-observe until that session reaches ≥20 again; other sessions keep their own memory.
+
+Disable with `learning.session_aware: false`.
+
 ## Pattern evidence (≥20)
 
-- Every closed trade increments counters for keys: `regime`, `symbol`, `exit_reason`, `confidence_bucket`, `strategy`, and `regime|exit`.
+- Every closed trade increments counters for keys: `regime`, `symbol`, `exit_reason`, `confidence_bucket`, `strategy`, and `regime|exit` (each prefixed with `session=…` when session-aware).
 - **Win and loss** both require `pattern_min_occurrences` (default **20**) before confirmation.
 - Below 20: observation only — no hypothesis action, no confidence effect.
 
@@ -14,13 +32,14 @@ discovery → pattern → optimization → exploitation (suggested by trade coun
 
 - Effect: **confidence boost only** (`win_confidence_boost`, default +8).
 - Does **not** modify entry rules / strategy / the pattern itself.
-- Scope: **only the matching contextual key** (e.g. `regime=ranging`), not the full 5-indicator entry checklist.
+- Scope: **only the matching contextual key** (e.g. `session=europe|regime=ranging`), not the full 5-indicator entry checklist.
 
 ### Confirmed loss pattern
 
 - Effect: confidence penalty and optional **soft-reject** (`loss_soft_reject`).
 - Base strategy unchanged.
 - Scope: **only that key** — does **not** treat BB+RSI+MACD+rejection as all wrong.
+- Bare `session=…` and `…|strategy=…` keys are excluded from soft-reject (too broad).
 
 ### Strategy vs costs
 

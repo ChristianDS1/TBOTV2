@@ -289,7 +289,9 @@ def test_pattern_not_confirmed_below_20(cfg, tmp_db):
     patterns = tmp_db.get_patterns(direction="loss", status="confirmed")
     assert patterns == []
     observing = tmp_db.get_patterns(direction="loss", status="observing")
-    assert any(p["pattern_key"] == "regime=high_vol" and p["count"] == 19 for p in observing)
+    assert any(
+        p["pattern_key"].endswith("regime=high_vol") and p["count"] == 19 for p in observing
+    )
 
 
 def test_win_pattern_confirms_at_20_boost_only(cfg, tmp_db):
@@ -305,7 +307,7 @@ def test_win_pattern_confirms_at_20_boost_only(cfg, tmp_db):
         else:
             assert any(n["direction"] == "win" for n in newly)
     confirmed = tmp_db.get_patterns(direction="win", status="confirmed")
-    assert any(p["pattern_key"] == "regime=ranging" for p in confirmed)
+    assert any(p["pattern_key"].endswith("regime=ranging") for p in confirmed)
     changes = tmp_db.applied_changes_on_day(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     assert any(c["action"] == "confidence_boost" for c in changes)
     assert all(c["action"] != "rewrite_strategy" for c in changes)
@@ -445,8 +447,8 @@ def test_take_profit_negative_net_is_strategy_win_not_loss(cfg, tmp_db):
     wins = tmp_db.get_patterns(direction="win")
     losses = tmp_db.get_patterns(direction="loss")
     costs = tmp_db.get_patterns(direction="cost_erosion")
-    assert any(p["pattern_key"] == "exit_reason=take_profit" for p in wins)
-    assert not any(p["pattern_key"] == "exit_reason=take_profit" for p in losses)
+    assert any(p["pattern_key"].endswith("exit_reason=take_profit") for p in wins)
+    assert not any(p["pattern_key"].endswith("exit_reason=take_profit") for p in losses)
     assert any("cost_erosion" in p["pattern_key"] for p in costs)
 
 
@@ -508,8 +510,8 @@ def test_rebuild_reclassifies_legacy_take_profit(cfg, tmp_db):
     wins = tmp_db.get_patterns(direction="win")
     losses = tmp_db.get_patterns(direction="loss")
     costs = tmp_db.get_patterns(direction="cost_erosion")
-    assert any(p["pattern_key"] == "exit_reason=take_profit" for p in wins)
-    assert not any(p["pattern_key"] == "exit_reason=take_profit" for p in losses)
+    assert any(p["pattern_key"].endswith("exit_reason=take_profit") for p in wins)
+    assert not any(p["pattern_key"].endswith("exit_reason=take_profit") for p in losses)
     assert len(costs) >= 1
 
 
@@ -781,25 +783,29 @@ def test_learning_display_labels():
 
 
 def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):
+    from trading_system.learning.sessions import session_bucket
+
     cfg.learning.loss_soft_reject = True
     cfg.learning.soft_reject_exclude_key_prefixes = ["strategy="]
+    cfg.learning.session_aware = True
     le = LearningEngine(cfg.learning, tmp_db)
-    # Confirm broad strategy loss key (the bug that halted trading)
+    sess = session_bucket(datetime.now(timezone.utc), cfg.learning.session_buckets)
     now = datetime.now(timezone.utc).isoformat()
+    strat_key = f"session={sess}|strategy=bb_mean_reversion"
+    regime_key = f"session={sess}|regime=breakout"
     for _ in range(20):
-        tmp_db.increment_pattern("strategy=bb_mean_reversion", "loss", now)
+        tmp_db.increment_pattern(strat_key, "loss", now)
     tmp_db.confirm_pattern(
-        "strategy=bb_mean_reversion",
+        strat_key,
         "loss",
         confirmed_count=20,
         decision_reason="test",
         effect_action="soft_reject",
     )
-    # Also a specific loss that SHOULD still soft-reject
     for _ in range(20):
-        tmp_db.increment_pattern("regime=breakout", "loss", now)
+        tmp_db.increment_pattern(regime_key, "loss", now)
     tmp_db.confirm_pattern(
-        "regime=breakout",
+        regime_key,
         "loss",
         confirmed_count=20,
         decision_reason="test",
@@ -817,7 +823,7 @@ def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):
         regime=MarketRegime.RANGING,
     )
     adjusted, reject = le.apply_confidence_effects(sig_ok)
-    assert reject is None  # strategy= excluded
+    assert reject is None  # strategy= excluded even with session prefix
     assert adjusted.confidence < 70  # penalty may still apply
 
     sig_bad = Signal(
@@ -833,3 +839,53 @@ def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):
     _, reject2 = le.apply_confidence_effects(sig_bad)
     assert reject2 is not None
     assert "regime=breakout" in reject2
+
+
+def test_session_bucket_mapping():
+    from trading_system.learning.sessions import session_bucket
+    from trading_system.config import SessionBucketConfig
+
+    buckets = [
+        SessionBucketConfig(name="asia", start_hour_utc=0, end_hour_utc=7),
+        SessionBucketConfig(name="europe", start_hour_utc=7, end_hour_utc=12),
+        SessionBucketConfig(name="us_open", start_hour_utc=12, end_hour_utc=16),
+        SessionBucketConfig(name="us_afternoon", start_hour_utc=16, end_hour_utc=21),
+        SessionBucketConfig(name="night", start_hour_utc=21, end_hour_utc=24),
+    ]
+    assert session_bucket(datetime(2026, 8, 12, 3, 0, tzinfo=timezone.utc), buckets) == "asia"
+    assert session_bucket(datetime(2026, 8, 12, 9, 0, tzinfo=timezone.utc), buckets) == "europe"
+    assert session_bucket(datetime(2026, 8, 12, 14, 0, tzinfo=timezone.utc), buckets) == "us_open"
+    assert session_bucket(datetime(2026, 8, 12, 18, 0, tzinfo=timezone.utc), buckets) == "us_afternoon"
+    assert session_bucket(datetime(2026, 8, 12, 22, 0, tzinfo=timezone.utc), buckets) == "night"
+
+
+def test_session_patterns_do_not_cross_bleed(cfg, tmp_db):
+    """Night confirmed loss must not soft-reject a europe entry."""
+    from trading_system.learning.sessions import session_bucket
+
+    cfg.learning.session_aware = True
+    cfg.learning.loss_soft_reject = True
+    le = LearningEngine(cfg.learning, tmp_db)
+    now = datetime.now(timezone.utc).isoformat()
+    night_key = "session=night|regime=breakout"
+    for _ in range(20):
+        tmp_db.increment_pattern(night_key, "loss", now)
+    tmp_db.confirm_pattern(
+        night_key, "loss", confirmed_count=20, decision_reason="test", effect_action="soft_reject"
+    )
+
+    # Force europe timestamp
+    europe_ts = datetime(2026, 8, 12, 9, 30, tzinfo=timezone.utc)
+    assert session_bucket(europe_ts, cfg.learning.session_buckets) == "europe"
+    sig = Signal(
+        symbol="ETH/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.PUT,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        timestamp=europe_ts,
+        regime=MarketRegime.BREAKOUT,
+    )
+    _, reject = le.apply_confidence_effects(sig)
+    assert reject is None

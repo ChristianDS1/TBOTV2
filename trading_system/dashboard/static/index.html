@@ -232,14 +232,16 @@
              <li>Forex session=${fx.forex_session_open ? "OPEN" : "CLOSED"} provider=${fx.provider || "—"}</li>
              <li>ML backend=${(data.model||{}).backend} brier=${fmt((data.model||{}).brier,4)}</li>
              <li>Capital resets=${data.capital_resets ?? 0}</li>
+             <li>Session=${(data.learning||{}).current_session || "—"} (aware=${(data.learning||{}).session_aware})</li>
              <li>Daily report=${(data.daily_report||{}).day || "pending first rollover"}</li>
            </ul>`;
 
         const kill = data.kill_reason ? ` | <span class="kill">${data.kill_reason}</span>` : "";
         const dr = data.daily_report || {};
         const thr = (data.patterns && data.patterns.threshold) || 20;
+        const sess = (data.learning && data.learning.current_session) || "—";
         document.getElementById("status").innerHTML =
-          `status=${data.status} | mode=${data.mode} | cycle=${data.cycle} | resets=${data.capital_resets ?? 0} | pattern≥${thr} | last_report=${dr.day || "—"} | refresh=5s${kill}`;
+          `status=${data.status} | mode=${data.mode} | cycle=${data.cycle} | session=${sess} | resets=${data.capital_resets ?? 0} | pattern≥${thr} | last_report=${dr.day || "—"} | refresh=5s${kill}`;
         document.getElementById("clock").textContent = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
       } catch (e) {
         document.getElementById("status").textContent = "monitor fetch failed: " + e;
