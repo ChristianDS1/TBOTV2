@@ -678,16 +678,19 @@ def test_near_extreme_and_rejection_required(cfg):
         bb_upper=110.0,
         cfg=cfg.strategy,
     )
-    sl_call = compute_tight_stop_loss(
+    sl_call, budget_c, trigger_c = compute_tight_stop_loss(
         side=Side.CALL,
         price=100.5,
         bb_lower=100.0,
         bb_upper=110.0,
         cfg=cfg.strategy,
+        exit_fee_bps=6.0,
     )
     assert tp_call > 100.5
     assert tp_call < 105.0
     assert sl_call < 100.5
+    assert trigger_c < budget_c  # fees reserved inside budget
+    assert abs(budget_c - (trigger_c + 6.0)) < 1e-6 or trigger_c == 1.0
 
     tp_put = compute_early_rejection_tp(
         side=Side.PUT,
@@ -697,16 +700,18 @@ def test_near_extreme_and_rejection_required(cfg):
         bb_upper=110.0,
         cfg=cfg.strategy,
     )
-    sl_put = compute_tight_stop_loss(
+    sl_put, budget_p, trigger_p = compute_tight_stop_loss(
         side=Side.PUT,
         price=109.5,
         bb_lower=100.0,
         bb_upper=110.0,
         cfg=cfg.strategy,
+        exit_fee_bps=6.0,
     )
     assert tp_put < 109.5
     assert tp_put > 105.0
     assert sl_put > 109.5
+    assert trigger_p <= budget_p
 
 
 def test_stop_loss_cuts_before_large_adverse(cfg, tmp_db):
@@ -727,6 +732,7 @@ def test_stop_loss_cuts_before_large_adverse(cfg, tmp_db):
         stop_loss=64950,
         timestamp=datetime.now(timezone.utc),
         regime=MarketRegime.RANGING,
+        features={"sl_budget_bps": 10.0},
     )
     ex.open_trade(sig, 10.0, 65000)
     closed = ex.manage_open(
@@ -736,6 +742,45 @@ def test_stop_loss_cuts_before_large_adverse(cfg, tmp_db):
     )
     assert len(closed) == 1
     assert closed[0].exit_reason == "stop_loss"
+
+
+def test_stop_loss_net_budget_includes_exit_fee(cfg, tmp_db):
+    """SL fires when estimated NET (with exit fee) reaches budget, before price SL."""
+    from trading_system.execution import PaperExecutor
+    from trading_system.portfolio import Portfolio
+    import json
+
+    port = Portfolio(tmp_db, 100)
+    cfg.execution.leverage = 1.0
+    cfg.execution.fee_bps = 4.0
+    cfg.execution.slippage_bps = 2.0
+    ex = PaperExecutor(cfg, tmp_db, port)
+    # Budget 10 bps on notional 10 = 0.01 max net loss
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        take_profit=66000,
+        stop_loss=64000,  # far away — should not be the price trigger
+        timestamp=datetime.now(timezone.utc),
+        regime=MarketRegime.RANGING,
+        features={"sl_budget_bps": 10.0},
+    )
+    pos = ex.open_trade(sig, 10.0, 65000)
+    # Adverse enough that net+exit fee hits -0.01 budget but still above far SL
+    closed = ex.manage_open(
+        {"BTC/USDT": 64920.0},
+        forex_session_open=True,
+        close_fx_at_session_end=False,
+    )
+    assert len(closed) == 1
+    assert closed[0].exit_reason == "stop_loss"
+    # Net loss should not massively exceed budget+small overshoot
+    assert closed[0].pnl is not None
+    assert closed[0].pnl > -0.05
 
 
 def test_adaptive_time_stop_prefers_early_window():

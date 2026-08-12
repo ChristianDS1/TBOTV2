@@ -84,14 +84,30 @@ def compute_tight_stop_loss(
     bb_lower: float,
     bb_upper: float,
     cfg: StrategyConfig,
-) -> float:
-    """Tight stop to cut losers before time_stop balloons the loss."""
+    exit_fee_bps: float = 0.0,
+) -> tuple[float, float, float]:
+    """
+    Tight stop. Returns (stop_price, budget_bps, trigger_bps).
+
+    budget_bps = configured max loss in bps of price (band/min).
+    If sl_include_exit_fees: trigger price is pulled closer so that
+    adverse_move_bps + exit_fee_bps ≈ budget_bps (matches close PnL which
+    subtracts exit fee). Take-profit is NOT adjusted.
+    """
     width = max(0.0, bb_upper - bb_lower)
     min_move = price * float(cfg.sl_min_bps) / 10_000.0
-    move = max(width * float(cfg.sl_band_fraction), min_move)
+    budget_move = max(width * float(cfg.sl_band_fraction), min_move)
+    budget_bps = budget_move / price * 10_000.0 if price > 0 else float(cfg.sl_min_bps)
+
+    trigger_bps = budget_bps
+    if getattr(cfg, "sl_include_exit_fees", True) and exit_fee_bps > 0:
+        # Keep at least 1 bps of price room so SL can still fire
+        trigger_bps = max(1.0, budget_bps - float(exit_fee_bps))
+    move = price * trigger_bps / 10_000.0
+
     if side == Side.CALL:
-        return price - move
-    return price + move
+        return price - move, budget_bps, trigger_bps
+    return price + move, budget_bps, trigger_bps
 
 
 class BBMeanReversionStrategy(Strategy):
@@ -233,16 +249,19 @@ class BBMeanReversionStrategy(Strategy):
             bb_upper=upper,
             cfg=cfg,
         )
-        sl = compute_tight_stop_loss(
+        sl, sl_budget_bps, sl_trigger_bps = compute_tight_stop_loss(
             side=side,
             price=price,
             bb_lower=lower,
             bb_upper=upper,
             cfg=cfg,
+            exit_fee_bps=0.0,  # engine applies exit-fee reserve when enabled
         )
         features["tp_mode"] = cfg.tp_mode
         features["tp_band_fraction"] = float(cfg.tp_band_fraction)
         features["sl_band_fraction"] = float(cfg.sl_band_fraction)
+        features["sl_budget_bps"] = sl_budget_bps
+        features["sl_trigger_bps"] = sl_trigger_bps
         features["bb_mid"] = float(row["bb_mid"])
         features["take_profit"] = tp
         features["stop_loss"] = sl

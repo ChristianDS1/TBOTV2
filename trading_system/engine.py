@@ -18,7 +18,7 @@ from trading_system.models import WinProbabilityModel
 from trading_system.portfolio import Portfolio
 from trading_system.reports import maybe_rollover_daily_report, write_daily_report
 from trading_system.risk import RiskManager
-from trading_system.strategies import StrategyRegistry
+from trading_system.strategies import StrategyRegistry, compute_tight_stop_loss
 from trading_system.types import PortfolioSnapshot, RejectedSignal, Venue
 
 logger = logging.getLogger(__name__)
@@ -193,6 +193,31 @@ class TradingEngine:
             return
 
         price = float(df["close"].iloc[-1])
+
+        # Stop-loss price: reserve exit fees inside the configured net-loss budget
+        if signal.stop_loss is not None and getattr(
+            self.cfg.strategy, "sl_include_exit_fees", True
+        ):
+            exit_fee_bps = (
+                self.cfg.execution.fee_bps + self.cfg.execution.slippage_bps
+            )
+            bb_lo = signal.features.get("bb_lower")
+            bb_hi = signal.features.get("bb_upper")
+            if bb_lo is not None and bb_hi is not None:
+                sl, budget_bps, trigger_bps = compute_tight_stop_loss(
+                    side=signal.side,
+                    price=price,
+                    bb_lower=float(bb_lo),
+                    bb_upper=float(bb_hi),
+                    cfg=self.cfg.strategy,
+                    exit_fee_bps=float(exit_fee_bps),
+                )
+                signal.stop_loss = sl
+                signal.features["stop_loss"] = sl
+                signal.features["sl_budget_bps"] = budget_bps
+                signal.features["sl_trigger_bps"] = trigger_bps
+                signal.features["sl_exit_fee_bps"] = float(exit_fee_bps)
+                signal.features["sl_include_exit_fees"] = True
 
         # Soft fee-aware edge: hard-reject only suicide setups; thin edge still enters
         edge = assess_entry_edge(

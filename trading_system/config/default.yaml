@@ -36,9 +36,11 @@ strategy:
   tp_mode: band_fraction
   tp_band_fraction: 0.25
   tp_min_bps: 12.0
-  # Tight stop — cut losers before time_stop balloons the loss
+  # Tight stop — cut losers before time_stop balloons the loss.
+  # Limit is max NET loss (price move + exit fees); TP unchanged / not fee-shrunk.
   sl_band_fraction: 0.12
   sl_min_bps: 10.0
+  sl_include_exit_fees: true
   bb_period: 20
   bb_std: 2.0
   rsi_period: 10

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.8
+
+- Stop-loss budget is fee-aware (max NET loss); take-profit math unchanged
+
 ## 0.1.7
 
 - Session-aware pattern learning (UTC buckets); no cross-session win/loss bleed

@@ -10,6 +10,7 @@ from trading_system.config import AppConfig
 from trading_system.database import Database
 from trading_system.execution.edge import (
     can_take_profit_net_positive,
+    estimate_close_net,
     position_notional,
     should_adaptive_time_stop,
     unrealized_pnl_on_notional,
@@ -148,13 +149,34 @@ class PaperExecutor:
                 closed.append(self.close_trade(pos, px, "liquidation"))
                 continue
 
-            # Tight stop-loss (cut losers before time_stop balloons R:R)
+            # Stop-loss: price hit OR estimated NET (incl. exit fee) hits budget
             if pos.stop_loss is not None:
                 hit_sl = (
                     (pos.side.value == "call" and px <= pos.stop_loss)
                     or (pos.side.value == "put" and px >= pos.stop_loss)
                 )
-                if hit_sl:
+                net_est = estimate_close_net(
+                    pos,
+                    px,
+                    self.cfg.execution.fee_bps,
+                    self.cfg.execution.slippage_bps,
+                )
+                budget_cash = None
+                try:
+                    feat = json.loads(pos.features_json or "{}")
+                    budget_bps = feat.get("sl_budget_bps")
+                    if budget_bps is not None:
+                        budget_cash = (
+                            position_notional(pos) * float(budget_bps) / 10_000.0
+                        )
+                except Exception:
+                    budget_cash = None
+                # If no stored budget, derive from distance entry→SL + exit fee already
+                # baked into fee-aware SL price (fallback: price hit only)
+                hit_net_budget = (
+                    budget_cash is not None and net_est <= -abs(budget_cash)
+                )
+                if hit_sl or hit_net_budget:
                     closed.append(self.close_trade(pos, px, "stop_loss"))
                     continue
 

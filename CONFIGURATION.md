@@ -16,7 +16,8 @@
 | `strategy.tp_band_fraction` | Early rejection TP as fraction of band width (default 0.25) |
 | `strategy.tp_min_bps` | Minimum TP distance in bps (default 12; also feeds fee-edge check) |
 | `strategy.sl_band_fraction` | Stop as fraction of band width (default 0.12) |
-| `strategy.sl_min_bps` | Minimum stop distance in bps (default 10) |
+| `strategy.sl_min_bps` | Max stop loss budget in bps (default 10; NET when fees included) |
+| `strategy.sl_include_exit_fees` | Shrink SL price so budget includes exit fee (default true); TP untouched |
 | `strategy.min_hold_minutes` | Minimum hold floor (default 1) |
 | `strategy.preferred_hold_minutes` | Primary early-rejection window (default 3); after this, bot decides extend vs time-stop |
 | `strategy.max_hold_minutes` | Hard time-stop cap (default 10) |
