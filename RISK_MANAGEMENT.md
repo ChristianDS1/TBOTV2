@@ -2,8 +2,8 @@
 
 ## Paper soft mode (default)
 
-- Trade **margin** ≈ €2–3 on €100; +€1 per +€50 equity (and reverse).
-- **Leverage** (default **5x**): notional = margin × leverage. Fees and PnL scale on **notional** (perp-style), so paper learns real fee/PnL geometry before live.
+- Trade **margin** ≈ €10 on €100; +€1 per +€50 equity (and reverse).
+- **Leverage** (default **20x**): notional = margin × leverage. Fees and PnL scale on **notional** (perp-style), so paper learns real fee/PnL geometry before live.
 - Max simultaneous positions: 5 (configurable).
 - Correlation groups: crypto majors / USD FX pairs.
 - **No** daily loss kill — bot keeps collecting data.
@@ -14,7 +14,7 @@
 | Concept | Meaning |
 |---|---|
 | `qty` / margin | Cash collateral locked (`base_trade_size`) |
-| `leverage` | Default 5.0 |
+| `leverage` | Default 20.0 |
 | `notional` | margin × leverage |
 | Fees | `fee_bps + slippage_bps` on **notional** each side |
 | Soft liquidation | Unrealized loss ≥ `liquidation_margin_fraction` × margin → close as `liquidation` |

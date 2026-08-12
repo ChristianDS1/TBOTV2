@@ -89,7 +89,7 @@ class Backtester:
         df: pd.DataFrame,
         symbol: str = "BTC/USDT",
         venue: Venue = Venue.CRYPTO,
-        trade_size: float = 2.5,
+        trade_size: float = 10.0,
     ) -> BacktestResult:
         scfg = self.cfg.strategy
         fee_bps = self.cfg.execution.fee_bps + self.cfg.execution.slippage_bps

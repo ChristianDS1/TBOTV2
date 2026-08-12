@@ -24,7 +24,7 @@
 | `capital_policy.auto_refill` | Top up paper capital when flat & broke |
 | `risk.soft_mode` | No daily kill |
 | `forex_session.*` | UTC session window |
-| `execution.leverage` | Paper margin multiplier (default 5); fees/PnL on notional |
+| `execution.leverage` | Paper margin multiplier (default 20); fees/PnL on notional |
 | `execution.tp_require_positive_net` | TP only if estimated net &gt; 0 |
 | `execution.poll_interval_seconds` | Engine loop (5) |
 | `dashboard.refresh_seconds` | UI poll (5) |

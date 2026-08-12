@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+- Paper defaults: margin `base_trade_size=10`, leverage `20x` (notional €200)
+
 ## 0.1.4
 
 - Adaptive time-stop: prefer early window (~3m), extend to 10m only if still progressing toward TP

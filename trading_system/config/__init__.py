@@ -18,7 +18,7 @@ DEFAULT_CONFIG = Path(__file__).with_name("default.yaml")
 class CapitalConfig(BaseModel):
     initial: float = 100.0
     currency: str = "EUR"
-    base_trade_size: float = 2.5
+    base_trade_size: float = 10.0
     size_step_per_50_equity: float = 1.0
 
 
@@ -86,7 +86,7 @@ class ExecutionConfig(BaseModel):
     fee_bps: float = 4.0
     slippage_bps: float = 2.0
     poll_interval_seconds: int = 5
-    leverage: float = 5.0
+    leverage: float = 20.0
     liquidation_margin_fraction: float = 0.9
     hard_min_edge_multiple: float = 0.5
     soft_min_edge_multiple: float = 1.15

@@ -613,7 +613,7 @@ def test_leverage_scales_notional_and_fees(cfg, tmp_db):
     from trading_system.portfolio import Portfolio
 
     port = Portfolio(tmp_db, 100)
-    cfg.execution.leverage = 5.0
+    cfg.execution.leverage = 20.0
     ex = PaperExecutor(cfg, tmp_db, port)
     sig = Signal(
         symbol="BTC/USDT",
@@ -626,20 +626,20 @@ def test_leverage_scales_notional_and_fees(cfg, tmp_db):
         timestamp=datetime.now(timezone.utc),
     )
     cash_before = port.cash
-    pos = ex.open_trade(sig, 2.5, 65000)
-    assert pos.leverage == 5.0
-    assert abs(pos.notional - 12.5) < 1e-9
-    # Entry fee on notional 12.5 * 6bps
-    expected_entry_fee = 12.5 * 6.0 / 10_000
+    pos = ex.open_trade(sig, 10.0, 65000)
+    assert pos.leverage == 20.0
+    assert abs(pos.notional - 200.0) < 1e-9
+    # Entry fee on notional 200 * 6bps
+    expected_entry_fee = 200.0 * 6.0 / 10_000
     assert abs(pos.fees - expected_entry_fee) < 1e-9
-    assert abs(cash_before - port.cash - (2.5 + expected_entry_fee)) < 1e-9
+    assert abs(cash_before - port.cash - (10.0 + expected_entry_fee)) < 1e-9
 
     closed = ex.close_trade(pos, 65500, "take_profit")
-    # PnL on notional 12.5, not on margin 2.5
+    # PnL on notional 200, not on margin 10
     assert closed.pnl is not None
     assert closed.gross_pnl is not None
     assert abs(closed.gross_pnl) > abs(
-        (65500 - 65000) / 65000 * 2.5
+        (65500 - 65000) / 65000 * 10.0
     )  # larger than 1x margin PnL
 
 

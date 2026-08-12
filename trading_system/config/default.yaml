@@ -3,7 +3,7 @@ mode: paper  # paper | live — live requires explicit activation
 capital:
   initial: 100.0
   currency: EUR
-  base_trade_size: 2.5
+  base_trade_size: 10.0
   size_step_per_50_equity: 1.0
 
 risk:
@@ -84,7 +84,7 @@ execution:
   poll_interval_seconds: 5
   # Paper leverage (margin model): margin=base_trade_size, notional=margin*leverage.
   # Fees/slippage charged on NOTIONAL (same bps at any leverage — matches perps).
-  leverage: 5.0
+  leverage: 20.0
   liquidation_margin_fraction: 0.9  # force-close if unrealized loss >= this * margin
   # Fee-aware edge (does NOT wipe learned patterns — forward-looking only)
   # Soft discovery defaults: only block near-hopeless edges; keep trade flow.
