@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS trades (
     exit_reason TEXT,
     gross_pnl REAL,
     entry_mark REAL,
-    cost_erosion INTEGER DEFAULT 0
+    cost_erosion INTEGER DEFAULT 0,
+    leverage REAL DEFAULT 1.0,
+    notional REAL
 );
 
 CREATE TABLE IF NOT EXISTS rejected_signals (
@@ -175,6 +177,8 @@ class Database:
             "gross_pnl": "REAL",
             "entry_mark": "REAL",
             "cost_erosion": "INTEGER DEFAULT 0",
+            "leverage": "REAL DEFAULT 1.0",
+            "notional": "REAL",
         }
         with self.connection() as conn:
             cols = {
@@ -192,8 +196,8 @@ class Database:
                     symbol, venue, side, strategy, qty, entry_price, entry_time,
                     take_profit, stop_loss, confidence, regime, features_json,
                     exploration, status, exit_price, exit_time, pnl, fees, exit_reason,
-                    gross_pnl, entry_mark, cost_erosion
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    gross_pnl, entry_mark, cost_erosion, leverage, notional
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pos.symbol,
@@ -218,6 +222,8 @@ class Database:
                     pos.gross_pnl,
                     pos.entry_mark,
                     int(pos.cost_erosion),
+                    pos.leverage,
+                    pos.notional,
                 ),
             )
             return int(cur.lastrowid)
@@ -229,7 +235,7 @@ class Database:
                 """
                 UPDATE trades SET
                     status=?, exit_price=?, exit_time=?, pnl=?, fees=?, exit_reason=?,
-                    gross_pnl=?, entry_mark=?, cost_erosion=?
+                    gross_pnl=?, entry_mark=?, cost_erosion=?, leverage=?, notional=?
                 WHERE id=?
                 """,
                 (
@@ -242,6 +248,8 @@ class Database:
                     pos.gross_pnl,
                     pos.entry_mark,
                     int(pos.cost_erosion),
+                    pos.leverage,
+                    pos.notional,
                     pos.id,
                 ),
             )
@@ -573,4 +581,6 @@ class Database:
             gross_pnl=row["gross_pnl"] if "gross_pnl" in keys else None,
             entry_mark=row["entry_mark"] if "entry_mark" in keys else None,
             cost_erosion=bool(row["cost_erosion"]) if "cost_erosion" in keys and row["cost_erosion"] is not None else False,
+            leverage=float(row["leverage"]) if "leverage" in keys and row["leverage"] is not None else 1.0,
+            notional=float(row["notional"]) if "notional" in keys and row["notional"] is not None else None,
         )

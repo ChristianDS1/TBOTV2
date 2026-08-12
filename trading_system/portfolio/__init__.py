@@ -35,8 +35,9 @@ class Portfolio:
             px = mark_prices.get(p.symbol)
             if px is None:
                 continue
+            notional = p.notional if p.notional and p.notional > 0 else p.qty * max(p.leverage or 1.0, 1.0)
             direction = 1 if p.side.value == "call" else -1
-            total += direction * (px - p.entry_price) / p.entry_price * (p.qty)
+            total += direction * (px - p.entry_price) / p.entry_price * notional
         return total
 
     def metrics(self) -> dict:

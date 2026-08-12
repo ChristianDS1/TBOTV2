@@ -83,29 +83,54 @@ def assess_entry_edge(
     )
 
 
+def position_notional(pos: Position) -> float:
+    if pos.notional is not None and pos.notional > 0:
+        return float(pos.notional)
+    lev = float(pos.leverage or 1.0)
+    return float(pos.qty) * max(lev, 1.0)
+
+
 def estimate_close_net(
     pos: Position,
     mark_price: float,
     fee_bps: float,
     slippage_bps: float,
 ) -> float:
-    """Estimate net PnL if we close now at mark (exit fee + exit slip only; entry fee sunk)."""
+    """Estimate net PnL if we close now at mark (exit fee + exit slip; entry fee sunk)."""
     slip = slippage_bps / 10_000.0
+    notional = position_notional(pos)
     if pos.side == Side.CALL or pos.side.value == "call":
         fill = mark_price * (1 - slip)
         direction = 1
     else:
         fill = mark_price * (1 + slip)
         direction = -1
-    raw = direction * (fill - pos.entry_price) / pos.entry_price * pos.qty
-    exit_fee = pos.qty * (fee_bps + slippage_bps) / 10_000.0
+    raw = direction * (fill - pos.entry_price) / pos.entry_price * notional
+    exit_fee = notional * (fee_bps + slippage_bps) / 10_000.0
     return raw - exit_fee
 
 
+def can_take_profit_net_positive(
+    pos: Position,
+    mark_price: float,
+    fee_bps: float,
+    slippage_bps: float,
+) -> bool:
+    """TP only when estimated net is strictly > 0."""
+    return estimate_close_net(pos, mark_price, fee_bps, slippage_bps) > 0.0
+
+
+# Back-compat alias
 def can_take_profit_net_non_negative(
     pos: Position,
     mark_price: float,
     fee_bps: float,
     slippage_bps: float,
 ) -> bool:
-    return estimate_close_net(pos, mark_price, fee_bps, slippage_bps) >= 0.0
+    return can_take_profit_net_positive(pos, mark_price, fee_bps, slippage_bps)
+
+
+def unrealized_pnl_on_notional(pos: Position, mark_price: float) -> float:
+    notional = position_notional(pos)
+    direction = 1 if pos.side.value == "call" else -1
+    return direction * (mark_price - pos.entry_price) / pos.entry_price * notional

@@ -29,6 +29,9 @@ timeframes:
 strategy:
   name: bb_mean_reversion
   min_conditions: 3
+  require_rejection_candle: true  # rejection_bull/bear hard gate (still counts toward 3/5)
+  # Max retrace from extreme toward mid before entry is "too late" (fraction of band width)
+  max_extreme_retrace_pct: 0.35
   bb_period: 20
   bb_std: 2.0
   rsi_period: 10
@@ -36,7 +39,7 @@ strategy:
   rsi_overbought: 70
   macd_fast: [5, 8, 9]
   macd_slow: [13, 21, 9]
-  max_hold_minutes: 12
+  max_hold_minutes: 10
   discovery_phase: true
   entry_confidence_floor: 0  # do not block in discovery
 
@@ -71,12 +74,17 @@ execution:
   fee_bps: 4.0
   slippage_bps: 2.0
   poll_interval_seconds: 5
+  # Paper leverage (margin model): margin=base_trade_size, notional=margin*leverage.
+  # Fees/slippage charged on NOTIONAL (same bps at any leverage — matches perps).
+  leverage: 5.0
+  liquidation_margin_fraction: 0.9  # force-close if unrealized loss >= this * margin
   # Fee-aware edge (does NOT wipe learned patterns — forward-looking only)
   # Soft discovery defaults: only block near-hopeless edges; keep trade flow.
   hard_min_edge_multiple: 0.5   # discovery: was 0.75; rollback to 0.75 if too loose
   soft_min_edge_multiple: 1.15  # was 1.25
   soft_edge_confidence_penalty: 8.0
-  tp_require_non_negative_net: true  # hit BB mid but wait if fees would make net < 0
+  # Hit BB mid but wait unless estimated NET PnL is strictly > 0 (not == 0)
+  tp_require_positive_net: true
 
 dashboard:
   host: 127.0.0.1

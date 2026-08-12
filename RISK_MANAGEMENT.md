@@ -2,11 +2,24 @@
 
 ## Paper soft mode (default)
 
-- Trade size ≈ €2–3 on €100; +€1 per +€50 equity (and reverse).
+- Trade **margin** ≈ €2–3 on €100; +€1 per +€50 equity (and reverse).
+- **Leverage** (default **5x**): notional = margin × leverage. Fees and PnL scale on **notional** (perp-style), so paper learns real fee/PnL geometry before live.
 - Max simultaneous positions: 5 (configurable).
 - Correlation groups: crypto majors / USD FX pairs.
 - **No** daily loss kill — bot keeps collecting data.
-- Exits: take-profit (BB mid), time stop, FX session end.
+- Exits: take-profit (BB mid), time stop, soft liquidation, FX session end.
+
+## Paper leverage model
+
+| Concept | Meaning |
+|---|---|
+| `qty` / margin | Cash collateral locked (`base_trade_size`) |
+| `leverage` | Default 5.0 |
+| `notional` | margin × leverage |
+| Fees | `fee_bps + slippage_bps` on **notional** each side |
+| Soft liquidation | Unrealized loss ≥ `liquidation_margin_fraction` × margin → close as `liquidation` |
+
+Fee **rate** (bps) does **not** change with leverage; higher leverage amplifies PnL and absolute fees because notional is larger.
 
 ## Auto capital refill
 
@@ -16,9 +29,9 @@ If paper cash/equity is exhausted and there are **no open positions**, capital i
 
 Does **not** wipe learned patterns / history.
 
-- Hard-reject only if distance to TP &lt; `0.75 ×` round-trip cost (`insufficient_edge_vs_fees`)
-- Soft zone `0.75–1.25 ×`: still enters, −8 confidence (`thin_edge`)
-- Take-profit close deferred if estimated **net** would be &lt; 0 (hold until better or `time_stop`, default **12m**)
+- Hard-reject only if distance to TP &lt; `hard_min_edge_multiple ×` round-trip cost
+- Soft zone below `soft_min_edge_multiple`: still enters, −8 confidence (`thin_edge`)
+- Take-profit close deferred unless estimated **net PnL &gt; 0** (strict; not ≥ 0). Hold until better or `time_stop` (default **10m**)
 
 ## Kill switch (technical)
 

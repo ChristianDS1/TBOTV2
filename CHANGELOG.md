@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2
+
+- Rejection candle hard-required; keep 3/5 otherwise
+- Skip entries that retraced too far from BB extreme toward mid (`max_extreme_retrace_pct`)
+- `max_hold_minutes` default 10
+- Take-profit only when estimated **net PnL > 0** (not ≥ 0)
+- Paper leverage model (default 5x): margin=`base_trade_size`, fees/PnL on notional, soft liquidation
+
 ## 0.1.1
 
 - Pattern evidence: confirm win/loss only at ≥20 occurrences

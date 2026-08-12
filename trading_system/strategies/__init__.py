@@ -28,6 +28,21 @@ class Strategy(ABC):
         ...
 
 
+def _near_extreme(row: pd.Series, side: Side, max_retrace: float) -> bool:
+    """True if close is still in the early zone from the extreme toward mid."""
+    upper = float(row["bb_upper"])
+    lower = float(row["bb_lower"])
+    close = float(row["close"])
+    width = upper - lower
+    if width <= 0 or pd.isna(width):
+        return False
+    if side == Side.CALL:
+        # From lower band upward: early rejection = still near lower
+        return (close - lower) / width <= max_retrace
+    # PUT: from upper band downward
+    return (upper - close) / width <= max_retrace
+
+
 class BBMeanReversionStrategy(Strategy):
     """Expansion → overextension → mean reversion (Estrategia.txt)."""
 
@@ -131,6 +146,27 @@ class BBMeanReversionStrategy(Strategy):
             ]
             reasons = [r for r, ok in zip(reasons, put_conds) if ok]
         else:
+            return None
+
+        # Hard gate: rejection candle required for extreme-entry style
+        if cfg.require_rejection_candle:
+            if side == Side.CALL and not bool(row["rejection_bull"]):
+                return None
+            if side == Side.PUT and not bool(row["rejection_bear"]):
+                return None
+
+        # Too far from extreme toward mid → late entry, skip
+        max_retrace = float(cfg.max_extreme_retrace_pct)
+        features["extreme_retrace_pct"] = None
+        upper = float(row["bb_upper"])
+        lower = float(row["bb_lower"])
+        width = upper - lower
+        if width > 0:
+            if side == Side.CALL:
+                features["extreme_retrace_pct"] = (float(row["close"]) - lower) / width
+            else:
+                features["extreme_retrace_pct"] = (upper - float(row["close"])) / width
+        if not _near_extreme(row, side, max_retrace):
             return None
 
         confidence = max(0.0, min(100.0, (met / 5.0) * 100.0 - soft_penalty))

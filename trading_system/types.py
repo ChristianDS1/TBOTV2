@@ -82,7 +82,7 @@ class Position(BaseModel):
     venue: Venue
     side: Side
     strategy: str
-    qty: float
+    qty: float  # margin (cash collateral) for leveraged paper model
     entry_price: float
     entry_time: datetime
     take_profit: float | None = None
@@ -100,6 +100,8 @@ class Position(BaseModel):
     fees: float = 0.0
     exit_reason: str | None = None
     cost_erosion: bool = False  # strategy OK / TP hit but net <= 0 due to costs
+    leverage: float = 1.0
+    notional: float | None = None  # margin * leverage; fees/PnL scale on this
 
 
 class RejectedSignal(BaseModel):

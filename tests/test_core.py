@@ -557,7 +557,8 @@ def test_tp_deferred_when_net_negative(cfg, tmp_db):
 
     port = Portfolio(tmp_db, 100)
     ex = PaperExecutor(cfg, tmp_db, port)
-    cfg.execution.tp_require_non_negative_net = True
+    cfg.execution.tp_require_positive_net = True
+    cfg.execution.leverage = 1.0  # isolate fee geometry
     sig = Signal(
         symbol="BTC/USDT",
         venue=Venue.CRYPTO,
@@ -570,7 +571,7 @@ def test_tp_deferred_when_net_negative(cfg, tmp_db):
         regime=MarketRegime.RANGING,
     )
     pos = ex.open_trade(sig, 2.5, 65000)
-    # Mark barely above TP — fees make net negative
+    # Mark barely above TP — fees make net <= 0
     closed = ex.manage_open(
         {"BTC/USDT": 65001.0},
         forex_session_open=True,
@@ -578,6 +579,89 @@ def test_tp_deferred_when_net_negative(cfg, tmp_db):
     )
     assert closed == []
     assert len(port.open_positions()) == 1
+
+
+def test_tp_requires_strictly_positive_net(cfg, tmp_db):
+    from trading_system.execution.edge import can_take_profit_net_positive, estimate_close_net
+    from trading_system.execution import PaperExecutor
+    from trading_system.portfolio import Portfolio
+
+    port = Portfolio(tmp_db, 100)
+    cfg.execution.leverage = 1.0
+    ex = PaperExecutor(cfg, tmp_db, port)
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        take_profit=65010,
+        timestamp=datetime.now(timezone.utc),
+        regime=MarketRegime.RANGING,
+    )
+    pos = ex.open_trade(sig, 2.5, 65000)
+    # Craft a mark where estimate is ~0 or negative — must not pass > 0 gate
+    assert can_take_profit_net_positive(pos, 65001.0, 4.0, 2.0) is False
+    # Large enough move should pass
+    assert can_take_profit_net_positive(pos, 65200.0, 4.0, 2.0) is True
+    assert estimate_close_net(pos, 65200.0, 4.0, 2.0) > 0
+
+
+def test_leverage_scales_notional_and_fees(cfg, tmp_db):
+    from trading_system.execution import PaperExecutor
+    from trading_system.portfolio import Portfolio
+
+    port = Portfolio(tmp_db, 100)
+    cfg.execution.leverage = 5.0
+    ex = PaperExecutor(cfg, tmp_db, port)
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=80,
+        reason="test",
+        take_profit=66000,
+        timestamp=datetime.now(timezone.utc),
+    )
+    cash_before = port.cash
+    pos = ex.open_trade(sig, 2.5, 65000)
+    assert pos.leverage == 5.0
+    assert abs(pos.notional - 12.5) < 1e-9
+    # Entry fee on notional 12.5 * 6bps
+    expected_entry_fee = 12.5 * 6.0 / 10_000
+    assert abs(pos.fees - expected_entry_fee) < 1e-9
+    assert abs(cash_before - port.cash - (2.5 + expected_entry_fee)) < 1e-9
+
+    closed = ex.close_trade(pos, 65500, "take_profit")
+    # PnL on notional 12.5, not on margin 2.5
+    assert closed.pnl is not None
+    assert closed.gross_pnl is not None
+    assert abs(closed.gross_pnl) > abs(
+        (65500 - 65000) / 65000 * 2.5
+    )  # larger than 1x margin PnL
+
+
+def test_near_extreme_and_rejection_required(cfg):
+    from trading_system.strategies import _near_extreme
+    from trading_system.types import Side
+
+    row = pd.Series(
+        {
+            "bb_upper": 110.0,
+            "bb_lower": 100.0,
+            "bb_mid": 105.0,
+            "close": 101.0,  # 10% from lower toward mid
+        }
+    )
+    assert _near_extreme(row, Side.CALL, 0.35) is True
+    row["close"] = 108.0  # far from lower
+    assert _near_extreme(row, Side.CALL, 0.35) is False
+    row["close"] = 109.0
+    assert _near_extreme(row, Side.PUT, 0.35) is True
+    row["close"] = 103.0
+    assert _near_extreme(row, Side.PUT, 0.35) is False
 
 
 def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):

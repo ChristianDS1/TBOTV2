@@ -93,6 +93,7 @@ class Backtester:
     ) -> BacktestResult:
         scfg = self.cfg.strategy
         fee_bps = self.cfg.execution.fee_bps + self.cfg.execution.slippage_bps
+        leverage = max(1.0, float(self.cfg.execution.leverage or 1.0))
         feat = build_features(
             df,
             bb_period=scfg.bb_period,
@@ -126,14 +127,16 @@ class Backtester:
 
                 if exit_reason:
                     direction = 1 if open_trade["side"] == "call" else -1
-                    raw = direction * (price - open_trade["entry"]) / open_trade["entry"] * trade_size
-                    fees = trade_size * fee_bps / 10_000 * 2
-                    pnl = raw - fees
-                    cash += trade_size + pnl
+                    notional = open_trade["notional"]
+                    margin = open_trade["margin"]
+                    raw = direction * (price - open_trade["entry"]) / open_trade["entry"] * notional
+                    exit_fee = notional * fee_bps / 10_000
+                    net = raw - exit_fee
+                    cash += margin + net
                     open_trade.update(
                         {
                             "exit": price,
-                            "pnl": pnl,
+                            "pnl": net,
                             "exit_reason": exit_reason,
                             "exit_i": i,
                         }
@@ -147,9 +150,11 @@ class Backtester:
                 ]
                 sig = self.strategy.evaluate(symbol, venue, ohlcv, scfg)
                 if sig is not None:
-                    cost = trade_size * fee_bps / 10_000
-                    if cash >= trade_size + cost:
-                        cash -= trade_size + cost
+                    margin = trade_size
+                    notional = margin * leverage
+                    entry_fee = notional * fee_bps / 10_000
+                    if cash >= margin + entry_fee:
+                        cash -= margin + entry_fee
                         open_trade = {
                             "side": sig.side.value,
                             "entry": price,
@@ -157,14 +162,18 @@ class Backtester:
                             "entry_i": i,
                             "confidence": sig.confidence,
                             "symbol": symbol,
+                            "margin": margin,
+                            "notional": notional,
+                            "entry_fee": entry_fee,
+                            "leverage": leverage,
                         }
 
             marked = cash
             if open_trade:
                 direction = 1 if open_trade["side"] == "call" else -1
-                marked += trade_size + direction * (price - open_trade["entry"]) / open_trade[
+                marked += open_trade["margin"] + direction * (price - open_trade["entry"]) / open_trade[
                     "entry"
-                ] * trade_size
+                ] * open_trade["notional"]
             equity_curve.append(marked)
 
         pnls = [t["pnl"] for t in trades]

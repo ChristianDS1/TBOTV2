@@ -1,4 +1,4 @@
-"""Paper execution engine."""
+"""Paper execution engine — margin + leverage model (fees on notional)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,11 @@ from datetime import datetime, timezone, timedelta
 
 from trading_system.config import AppConfig
 from trading_system.database import Database
-from trading_system.execution.edge import can_take_profit_net_non_negative
+from trading_system.execution.edge import (
+    can_take_profit_net_positive,
+    position_notional,
+    unrealized_pnl_on_notional,
+)
 from trading_system.portfolio import Portfolio
 from trading_system.types import Position, Signal, TradeStatus
 
@@ -21,23 +25,30 @@ class PaperExecutor:
         self.db = db
         self.portfolio = portfolio
 
-    def _cost_bps(self, notional: float) -> float:
+    def _leverage(self) -> float:
+        return max(1.0, float(self.cfg.execution.leverage or 1.0))
+
+    def _cost_on_notional(self, notional: float) -> float:
         bps = self.cfg.execution.fee_bps + self.cfg.execution.slippage_bps
         return notional * bps / 10_000
 
     def open_trade(self, signal: Signal, size: float, price: float) -> Position:
-        # Slippage adverse on fill; keep pre-slip mark for strategy gross PnL
+        # size = margin; notional = margin * leverage (perp-style paper)
+        leverage = self._leverage()
+        margin = float(size)
+        notional = margin * leverage
         slip = self.cfg.execution.slippage_bps / 10_000
         fill = price * (1 + slip) if signal.side.value == "call" else price * (1 - slip)
-        fees = self._cost_bps(size)
-        self.portfolio.debit(size + fees)
+        fees = self._cost_on_notional(notional)
+        # Lock margin + pay entry fee from cash
+        self.portfolio.debit(margin + fees)
 
         pos = Position(
             symbol=signal.symbol,
             venue=signal.venue,
             side=signal.side,
             strategy=signal.strategy,
-            qty=size,
+            qty=margin,
             entry_price=fill,
             entry_mark=price,
             entry_time=datetime.now(timezone.utc),
@@ -49,14 +60,18 @@ class PaperExecutor:
             exploration=signal.exploration,
             status=TradeStatus.OPEN,
             fees=fees,
+            leverage=leverage,
+            notional=notional,
         )
         pos.id = self.db.insert_trade(pos)
         logger.info(
-            "OPEN %s %s %s size=%.2f @ %.6f conf=%.1f",
+            "OPEN %s %s %s margin=%.2f notional=%.2f lev=%.1fx @ %.6f conf=%.1f",
             signal.side.value,
             signal.symbol,
             signal.strategy,
-            size,
+            margin,
+            notional,
+            leverage,
             fill,
             signal.confidence,
         )
@@ -68,15 +83,16 @@ class PaperExecutor:
         slip = self.cfg.execution.slippage_bps / 10_000
         fill = price * (1 - slip) if pos.side.value == "call" else price * (1 + slip)
         direction = 1 if pos.side.value == "call" else -1
+        notional = position_notional(pos)
+        margin = float(pos.qty)
 
-        # Strategy gross: mark-to-mark (no fees, no slip)
+        # Strategy gross: mark-to-mark on notional (no fees, no slip)
         entry_ref = pos.entry_mark if pos.entry_mark and pos.entry_mark > 0 else pos.entry_price
-        gross = direction * (price - entry_ref) / entry_ref * pos.qty
+        gross = direction * (price - entry_ref) / entry_ref * notional
 
-        # Net cash impact on this close: slipped fill move minus exit fee
-        # (entry fee already debited at open)
-        raw_fill_pnl = direction * (fill - pos.entry_price) / pos.entry_price * pos.qty
-        exit_fees = self._cost_bps(pos.qty)
+        # Net cash: leveraged move on fill minus exit fee (entry fee already debited)
+        raw_fill_pnl = direction * (fill - pos.entry_price) / pos.entry_price * notional
+        exit_fees = self._cost_on_notional(notional)
         net = raw_fill_pnl - exit_fees
 
         # Cost erosion: strategy achieved target / gross positive but net red
@@ -91,16 +107,18 @@ class PaperExecutor:
         pos.exit_reason = reason
         pos.cost_erosion = cost_erosion
         pos.status = TradeStatus.CLOSED
-        self.portfolio.credit(pos.qty + net)
+        # Return margin + net PnL to cash
+        self.portfolio.credit(margin + net)
         self.db.update_trade(pos)
         logger.info(
-            "CLOSE %s %s gross=%.4f net=%.4f reason=%s cost_erosion=%s",
+            "CLOSE %s %s gross=%.4f net=%.4f reason=%s cost_erosion=%s lev=%.1fx",
             pos.side.value,
             pos.symbol,
             gross,
             net,
             reason,
             cost_erosion,
+            pos.leverage or 1.0,
         )
         return pos
 
@@ -112,9 +130,21 @@ class PaperExecutor:
     ) -> list[Position]:
         closed: list[Position] = []
         now = datetime.now(timezone.utc)
+        liq_frac = float(self.cfg.execution.liquidation_margin_fraction or 0.9)
+        require_pos_net = bool(
+            getattr(self.cfg.execution, "tp_require_positive_net", True)
+            or getattr(self.cfg.execution, "tp_require_non_negative_net", True)
+        )
+
         for pos in list(self.portfolio.open_positions()):
             px = mark_prices.get(pos.symbol)
             if px is None:
+                continue
+
+            # Soft liquidation: unrealized loss eats most of margin
+            u_pnl = unrealized_pnl_on_notional(pos, px)
+            if u_pnl <= -abs(pos.qty) * liq_frac:
+                closed.append(self.close_trade(pos, px, "liquidation"))
                 continue
 
             max_hold = timedelta(minutes=self.cfg.strategy.max_hold_minutes)
@@ -128,19 +158,18 @@ class PaperExecutor:
                     or (pos.side.value == "put" and px <= pos.take_profit)
                 )
                 if hit_tp:
-                    require_net = self.cfg.execution.tp_require_non_negative_net
-                    ok_net = can_take_profit_net_non_negative(
+                    ok_net = can_take_profit_net_positive(
                         pos,
                         px,
                         self.cfg.execution.fee_bps,
                         self.cfg.execution.slippage_bps,
                     )
-                    if (not require_net) or ok_net:
+                    if (not require_pos_net) or ok_net:
                         closed.append(self.close_trade(pos, px, "take_profit"))
                         continue
-                    # Hit BB mid but fees would make net < 0 — hold; time_stop/session may still apply
+                    # Hit BB mid but net would be <= 0 — hold for better or time_stop
                     logger.debug(
-                        "TP deferred (net would be negative) %s %s mark=%.6f",
+                        "TP deferred (net not > 0) %s %s mark=%.6f",
                         pos.side.value,
                         pos.symbol,
                         px,

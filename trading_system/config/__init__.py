@@ -34,6 +34,8 @@ class RiskConfig(BaseModel):
 class StrategyConfig(BaseModel):
     name: str = "bb_mean_reversion"
     min_conditions: int = 3
+    require_rejection_candle: bool = True
+    max_extreme_retrace_pct: float = 0.35
     bb_period: int = 20
     bb_std: float = 2.0
     rsi_period: int = 10
@@ -41,7 +43,7 @@ class StrategyConfig(BaseModel):
     rsi_overbought: float = 70
     macd_fast: list[int] = Field(default_factory=lambda: [5, 8, 9])
     macd_slow: list[int] = Field(default_factory=lambda: [13, 21, 9])
-    max_hold_minutes: int = 12
+    max_hold_minutes: int = 10
     discovery_phase: bool = True
     entry_confidence_floor: float = 0
 
@@ -78,9 +80,13 @@ class ExecutionConfig(BaseModel):
     fee_bps: float = 4.0
     slippage_bps: float = 2.0
     poll_interval_seconds: int = 5
+    leverage: float = 5.0
+    liquidation_margin_fraction: float = 0.9
     hard_min_edge_multiple: float = 0.5
     soft_min_edge_multiple: float = 1.15
     soft_edge_confidence_penalty: float = 8.0
+    tp_require_positive_net: bool = True
+    # Legacy alias kept for older configs/tests
     tp_require_non_negative_net: bool = True
 
 
