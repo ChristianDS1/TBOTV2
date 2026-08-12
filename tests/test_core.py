@@ -686,6 +686,50 @@ def test_near_extreme_and_rejection_required(cfg):
     assert tp_put > 105.0
 
 
+def test_adaptive_time_stop_prefers_early_window():
+    from trading_system.execution.edge import should_adaptive_time_stop
+    from trading_system.types import Position, Side, Venue, TradeStatus
+
+    pos = Position(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        qty=2.5,
+        entry_price=100.0,
+        entry_mark=100.0,
+        entry_time=datetime.now(timezone.utc),
+        take_profit=100.20,
+        status=TradeStatus.OPEN,
+        leverage=1.0,
+        notional=2.5,
+    )
+    # Inside preferred window — never time-stop yet
+    assert should_adaptive_time_stop(pos, 99.9, 2.0, preferred_hold_minutes=3, max_hold_minutes=10) is False
+    # After preferred, adverse & not progressing → stop
+    assert should_adaptive_time_stop(pos, 99.5, 4.0, preferred_hold_minutes=3, max_hold_minutes=10) is True
+    # After preferred but progressing toward TP → extend
+    assert should_adaptive_time_stop(pos, 100.12, 5.0, preferred_hold_minutes=3, max_hold_minutes=10) is False
+    # Hard cap
+    assert should_adaptive_time_stop(pos, 100.12, 10.0, preferred_hold_minutes=3, max_hold_minutes=10) is True
+
+
+def test_learning_display_labels():
+    from trading_system.learning import learning_display
+
+    win = _closed_pos(pnl=0.01, exit_reason="take_profit")
+    win.gross_pnl = 0.02
+    d = learning_display(win)
+    assert d["learning_direction"] == "win"
+    assert "ganancia" in d["learning_label"]
+
+    loss = _closed_pos(pnl=-0.02, exit_reason="time_stop")
+    loss.gross_pnl = -0.01
+    d2 = learning_display(loss)
+    assert d2["learning_direction"] == "loss"
+    assert "perdida" in d2["learning_label"]
+
+
 def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):
     cfg.learning.loss_soft_reject = True
     cfg.learning.soft_reject_exclude_key_prefixes = ["strategy="]

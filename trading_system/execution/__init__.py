@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from trading_system.config import AppConfig
 from trading_system.database import Database
 from trading_system.execution.edge import (
     can_take_profit_net_positive,
     position_notional,
+    should_adaptive_time_stop,
     unrealized_pnl_on_notional,
 )
 from trading_system.portfolio import Portfolio
@@ -147,8 +148,20 @@ class PaperExecutor:
                 closed.append(self.close_trade(pos, px, "liquidation"))
                 continue
 
-            max_hold = timedelta(minutes=self.cfg.strategy.max_hold_minutes)
-            if now - pos.entry_time >= max_hold:
+            max_hold = float(self.cfg.strategy.max_hold_minutes)
+            pref_hold = float(
+                getattr(self.cfg.strategy, "preferred_hold_minutes", 3) or 3
+            )
+            min_hold = float(getattr(self.cfg.strategy, "min_hold_minutes", 1) or 1)
+            held_min = (now - pos.entry_time).total_seconds() / 60.0
+            if should_adaptive_time_stop(
+                pos,
+                px,
+                held_min,
+                min_hold_minutes=min_hold,
+                preferred_hold_minutes=pref_hold,
+                max_hold_minutes=max_hold,
+            ):
                 closed.append(self.close_trade(pos, px, "time_stop"))
                 continue
 

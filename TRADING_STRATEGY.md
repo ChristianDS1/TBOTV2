@@ -24,7 +24,7 @@ Enter when ≥ `min_conditions` (default 3) **and**:
 - floored by `tp_min_bps` (default 12) so fees are learnable
 - clamped short of mid so we never wait for a full mean reversion
 
-Max hold: **10** minutes (1–10m scalping window).
+**Hold window (adaptive):** pattern priority is the first minutes (`preferred_hold_minutes`, default 3). After that the bot extends toward `max_hold_minutes` (10) only if price is still progressing toward TP / in favor; otherwise time-stops early. Hard cap always at 10.
 
 ### PUT (short)
 

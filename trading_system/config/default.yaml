@@ -44,6 +44,9 @@ strategy:
   rsi_overbought: 70
   macd_fast: [5, 8, 9]
   macd_slow: [13, 21, 9]
+  # Hold window: early rejection is primary (preferred); bot may extend to max if still progressing
+  min_hold_minutes: 1
+  preferred_hold_minutes: 3
   max_hold_minutes: 10
   discovery_phase: true
   entry_confidence_floor: 0  # do not block in discovery

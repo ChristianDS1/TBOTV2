@@ -47,6 +47,8 @@ class StrategyConfig(BaseModel):
     rsi_overbought: float = 70
     macd_fast: list[int] = Field(default_factory=lambda: [5, 8, 9])
     macd_slow: list[int] = Field(default_factory=lambda: [13, 21, 9])
+    min_hold_minutes: int = 1
+    preferred_hold_minutes: int = 3
     max_hold_minutes: int = 10
     discovery_phase: bool = True
     entry_confidence_floor: float = 0

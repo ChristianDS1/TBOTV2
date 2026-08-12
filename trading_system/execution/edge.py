@@ -134,3 +134,51 @@ def unrealized_pnl_on_notional(pos: Position, mark_price: float) -> float:
     notional = position_notional(pos)
     direction = 1 if pos.side.value == "call" else -1
     return direction * (mark_price - pos.entry_price) / pos.entry_price * notional
+
+
+def should_adaptive_time_stop(
+    pos: Position,
+    mark_price: float,
+    held_minutes: float,
+    *,
+    min_hold_minutes: float = 1.0,
+    preferred_hold_minutes: float = 3.0,
+    max_hold_minutes: float = 10.0,
+) -> bool:
+    """
+    Early-rejection bias: prefer closing after the primary window unless the
+    trade is still progressing toward TP. Hard cap at max_hold_minutes.
+    """
+    max_m = max(float(max_hold_minutes), 1.0)
+    pref_m = min(max(float(preferred_hold_minutes), float(min_hold_minutes)), max_m)
+    min_m = min(float(min_hold_minutes), pref_m)
+
+    if held_minutes >= max_m:
+        return True
+    if held_minutes < pref_m:
+        return False
+    # Between preferred and max: extend only if still working
+    entry = pos.entry_mark if pos.entry_mark and pos.entry_mark > 0 else pos.entry_price
+    if entry <= 0:
+        return True
+    is_call = pos.side.value == "call"
+    direction = 1 if is_call else -1
+    move = direction * (mark_price - entry) / entry
+
+    if pos.take_profit is not None:
+        tp = float(pos.take_profit)
+        hit_tp = (is_call and mark_price >= tp) or ((not is_call) and mark_price <= tp)
+        if hit_tp:
+            # TP deferred for net>0 — keep extending until max
+            return False
+        dist_entry = abs(tp - entry)
+        dist_now = abs(tp - mark_price)
+        progressing = dist_now < dist_entry * 0.90
+    else:
+        progressing = move > 0
+
+    in_favor = move > 0
+    if in_favor or progressing:
+        return False
+    # Stalled / adverse after preferred early window
+    return held_minutes >= max(pref_m, min_m)

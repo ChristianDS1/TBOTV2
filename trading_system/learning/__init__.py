@@ -113,6 +113,22 @@ def classify_strategy_outcome(pos: Position) -> tuple[str, bool]:
     return direction, cost_erosion
 
 
+def learning_display(pos: Position) -> dict[str, Any]:
+    """Human-readable learning classification for monitor UI."""
+    direction, cost_erosion = classify_strategy_outcome(pos)
+    if direction == "win":
+        label = "aprendizaje ganancia"
+        if cost_erosion:
+            label = "aprendizaje ganancia (fees)"
+    else:
+        label = "aprendizaje perdida"
+    return {
+        "learning_direction": direction,
+        "learning_label": label,
+        "cost_erosion": cost_erosion,
+    }
+
+
 def signal_pattern_keys(signal: Signal) -> list[str]:
     return [
         f"regime={signal.regime.value}",

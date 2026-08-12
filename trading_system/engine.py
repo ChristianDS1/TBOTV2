@@ -337,7 +337,13 @@ class TradingEngine:
                 return {"error": str(e), "status": self.status_message}
 
         open_pos = [p.model_dump(mode="json") for p in self.portfolio.open_positions()]
-        closed = [p.model_dump(mode="json") for p in self.db.get_closed_trades(30)]
+        from trading_system.learning import learning_display
+
+        closed = []
+        for p in self.db.get_closed_trades(30):
+            row = p.model_dump(mode="json")
+            row.update(learning_display(p))
+            closed.append(row)
         rejected = self.db.recent_rejected(20)
         insights = self.db.recent_insights(15)
         rankings = self.db.get_strategy_stats()

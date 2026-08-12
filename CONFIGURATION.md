@@ -15,7 +15,9 @@
 | `strategy.tp_mode` | `band_fraction` (default) or `fixed_bps` — never BB mid |
 | `strategy.tp_band_fraction` | Early rejection TP as fraction of band width (default 0.25) |
 | `strategy.tp_min_bps` | Minimum TP distance in bps |
-| `strategy.max_hold_minutes` | Time stop (default 10) |
+| `strategy.min_hold_minutes` | Minimum hold floor (default 1) |
+| `strategy.preferred_hold_minutes` | Primary early-rejection window (default 3); after this, bot decides extend vs time-stop |
+| `strategy.max_hold_minutes` | Hard time-stop cap (default 10) |
 | `learning.exploration_budget` | Explore fraction |
 | `learning.pattern_min_occurrences` | Confirm win/loss patterns only at ≥N (default 20) |
 | `learning.win_confidence_boost` | Confidence-only effect for confirmed wins |

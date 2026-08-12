@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- Adaptive time-stop: prefer early window (~3m), extend to 10m only if still progressing toward TP
+- Monitor Recent Closed: entry price, exit price, learning label (ganancia / pérdida)
+
 ## 0.1.3
 
 - Take-profit no longer uses BB mid; early rejection target (`tp_band_fraction` / `tp_min_bps`) for crypto and forex

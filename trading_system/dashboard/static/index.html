@@ -189,9 +189,16 @@
         document.getElementById("closed").innerHTML = renderTable(data.closed_trades, [
           { label: "Side", render: r => sidePill(r.side) },
           { label: "Symbol", render: r => r.symbol },
+          { label: "Entry", render: r => fmt(r.entry_price, 5) },
+          { label: "Exit px", render: r => fmt(r.exit_price, 5) },
           { label: "PnL", render: r => `<span class="${(r.pnl||0)>=0?'pos':'neg'}">${fmt(r.pnl,3)}</span>` },
           { label: "Exit", render: r => r.exit_reason || "—" },
-          { label: "Conf", render: r => fmt(r.confidence, 1) },
+          { label: "Aprendizaje", render: r => {
+              const lab = r.learning_label || (r.learning_direction === "win" ? "aprendizaje ganancia" : "aprendizaje perdida");
+              const cls = (r.learning_direction === "win") ? "pos" : "neg";
+              return `<span class="${cls}">${lab}</span>`;
+            }
+          },
         ]);
 
         document.getElementById("rejected").innerHTML = renderTable(data.rejected_signals, [
