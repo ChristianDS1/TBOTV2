@@ -261,6 +261,13 @@ class Database:
             ).fetchall()
         return [self._row_to_position(r) for r in rows]
 
+    def get_trade(self, trade_id: int) -> Position | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM trades WHERE id=?", (int(trade_id),)
+            ).fetchone()
+        return self._row_to_position(row) if row else None
+
     def get_closed_trades(self, limit: int = 200) -> list[Position]:
         with self.connection() as conn:
             rows = conn.execute(

@@ -26,7 +26,7 @@ Enter when ≥ `min_conditions` (default 3) **and**:
 - Paper defaults: margin `base_trade_size` 10, `leverage` 20
 - Legacy: `tp_mode: band_fraction|fixed_bps`, `sl_mode: rr_from_tp|band`
 
-**Hold window (adaptive):** pattern priority is the first minutes (`preferred_hold_minutes`, default 3). After that the bot extends toward `max_hold_minutes` (10) only if price is still progressing / in favor; otherwise time-stops early. Hard cap always at 10.
+**Hold window (adaptive):** `time_stop` applies only when estimated **net ≤ 0**. Winners (net &gt; 0) stay open until `trend_exit` (fade) or `stop_loss`. Losers/flat still use preferred→max hold (1–10m).
 
 ### PUT (short)
 

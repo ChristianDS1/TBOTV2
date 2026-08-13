@@ -219,7 +219,14 @@ class PaperExecutor:
                         closed.append(self.close_trade(pos, px, "trend_exit"))
                         continue
 
-            if should_adaptive_time_stop(
+            # Winners (net > 0): no time_stop — only fade or SL
+            net_for_ts = estimate_close_net(
+                pos,
+                px,
+                self.cfg.execution.fee_bps,
+                self.cfg.execution.slippage_bps,
+            )
+            if net_for_ts <= 0 and should_adaptive_time_stop(
                 pos,
                 px,
                 held_min,

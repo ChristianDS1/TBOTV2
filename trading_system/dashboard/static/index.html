@@ -108,6 +108,28 @@
     .metric .value { font-size: 1.35rem; font-family: var(--mono); margin-top: 0.25rem; }
     .pos { color: var(--accent); }
     .neg { color: var(--bad); }
+    .charts-open {
+      padding: 0 1.5rem 0.75rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 0.75rem;
+    }
+    .chart-panel {
+      border: 1px solid var(--line);
+      background: rgba(20, 28, 39, 0.9);
+      padding: 0.55rem 0.65rem 0.35rem;
+    }
+    .chart-panel .cht-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 0.35rem;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+    }
+    .chart-panel .cht-head .sym { color: var(--text); font-weight: 500; }
+    .chart-panel .cht-head .meta { color: var(--muted); }
+    .chart-el { height: 220px; width: 100%; }
     main {
       display: grid;
       grid-template-columns: 1.2fr 1fr;
@@ -142,6 +164,16 @@
     }
     .pill.call { color: var(--call); border-color: #2a6b4e; }
     .pill.put { color: var(--put); border-color: #6b2a2a; }
+    button.chart-btn {
+      background: transparent;
+      border: 1px solid #2a6b4e;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      padding: 0.15rem 0.4rem;
+      cursor: pointer;
+    }
+    button.chart-btn:hover { background: rgba(62, 207, 142, 0.1); }
     .status-bar {
       padding: 0.5rem 1.5rem 1rem;
       color: var(--muted);
@@ -151,9 +183,44 @@
     .kill { color: var(--bad); font-weight: 600; }
     ul.insights { margin: 0; padding-left: 1.1rem; font-size: 0.82rem; color: #c5d2e0; }
     ul.insights li { margin-bottom: 0.35rem; }
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.65);
+      z-index: 40;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .modal-backdrop.show { display: flex; }
+    .modal {
+      width: min(920px, 100%);
+      background: #101821;
+      border: 1px solid var(--line);
+      padding: 0.85rem 1rem 1rem;
+    }
+    .modal .modal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 0.5rem;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+    }
+    .modal .modal-head button {
+      background: transparent;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      cursor: pointer;
+      font-family: var(--mono);
+      padding: 0.2rem 0.5rem;
+    }
+    #modalChart { height: 360px; width: 100%; }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
   <header>
@@ -170,6 +237,7 @@
     <div class="sess-pills" id="sessPills"></div>
   </div>
   <div class="grid" id="metrics"></div>
+  <div class="charts-open" id="openCharts"></div>
   <main>
     <section>
       <h2>Open Trades</h2>
@@ -189,9 +257,23 @@
     </section>
   </main>
   <div class="status-bar" id="status"></div>
+
+  <div class="modal-backdrop" id="chartModal">
+    <div class="modal">
+      <div class="modal-head">
+        <div id="modalTitle">Trade chart</div>
+        <button type="button" id="modalClose">Close</button>
+      </div>
+      <div id="modalChart"></div>
+    </div>
+  </div>
+
   <script>
     const fmt = (n, d=2) => (n === null || n === undefined || Number.isNaN(n)) ? "—" : Number(n).toFixed(d);
     const pct = (n) => fmt(n * 100, 1) + "%";
+
+    const openChartState = new Map(); // tradeId -> { chart, candle, mid, upper, lower, el }
+    let modalChart = null;
 
     function metric(label, value, cls="") {
       return `<div class="metric"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
@@ -201,6 +283,158 @@
       const s = (side || "").toLowerCase();
       return `<span class="pill ${s}">${s.toUpperCase()}</span>`;
     }
+
+    function chartTheme() {
+      return {
+        layout: { background: { color: "#101821" }, textColor: "#8fa3b8" },
+        grid: { vertLines: { color: "#1c2836" }, horzLines: { color: "#1c2836" } },
+        rightPriceScale: { borderColor: "#243042" },
+        timeScale: { borderColor: "#243042", timeVisible: true, secondsVisible: false },
+      };
+    }
+
+    function applySeriesData(state, data) {
+      const candles = data.candles || [];
+      if (!candles.length) return;
+      state.candle.setData(candles);
+      const mid = (data.bb || []).map(b => ({ time: b.time, value: b.mid }));
+      const upper = (data.bb || []).map(b => ({ time: b.time, value: b.upper }));
+      const lower = (data.bb || []).map(b => ({ time: b.time, value: b.lower }));
+      state.mid.setData(mid);
+      state.upper.setData(upper);
+      state.lower.setData(lower);
+      const marks = (data.markers || []).filter(m => !m.line).map(m => ({
+        time: m.time,
+        position: m.position || "belowBar",
+        color: m.color || "#3ecf8e",
+        shape: m.shape || "circle",
+        text: m.text || "",
+      }));
+      state.candle.setMarkers(marks);
+      // SL price lines
+      if (state._slLines) {
+        state._slLines.forEach(l => { try { state.candle.removePriceLine(l); } catch(e) {} });
+      }
+      state._slLines = [];
+      (data.markers || []).filter(m => m.line && m.price != null).forEach(m => {
+        const line = state.candle.createPriceLine({
+          price: m.price,
+          color: "#8fa3b8",
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: m.text || "SL",
+        });
+        state._slLines.push(line);
+      });
+      state.chart.timeScale().fitContent();
+    }
+
+    function ensureOpenChart(trade) {
+      const id = String(trade.id);
+      let st = openChartState.get(id);
+      if (st) return st;
+      const wrap = document.createElement("div");
+      wrap.className = "chart-panel";
+      wrap.dataset.tid = id;
+      wrap.innerHTML = `<div class="cht-head"><span class="sym">${trade.symbol} ${sidePill(trade.side)}</span><span class="meta">#${trade.id} · live</span></div><div class="chart-el"></div>`;
+      document.getElementById("openCharts").appendChild(wrap);
+      const el = wrap.querySelector(".chart-el");
+      const chart = LightweightCharts.createChart(el, { ...chartTheme(), height: 220, width: el.clientWidth || 400 });
+      const candle = chart.addCandlestickSeries({
+        upColor: "#3ecf8e", downColor: "#e85d5d",
+        borderUpColor: "#3ecf8e", borderDownColor: "#e85d5d",
+        wickUpColor: "#3ecf8e", wickDownColor: "#e85d5d",
+      });
+      const mid = chart.addLineSeries({ color: "#e6b35a", lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+      const upper = chart.addLineSeries({ color: "#3a7ca5", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
+      const lower = chart.addLineSeries({ color: "#3a7ca5", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
+      st = { chart, candle, mid, upper, lower, wrap, el, symbol: trade.symbol, venue: trade.venue, tradeId: trade.id };
+      openChartState.set(id, st);
+      const ro = new ResizeObserver(() => {
+        chart.applyOptions({ width: el.clientWidth });
+      });
+      ro.observe(el);
+      st._ro = ro;
+      return st;
+    }
+
+    function pruneOpenCharts(openIds) {
+      const keep = new Set(openIds.map(String));
+      for (const [id, st] of openChartState.entries()) {
+        if (!keep.has(id)) {
+          try { st._ro && st._ro.disconnect(); } catch(e) {}
+          try { st.chart.remove(); } catch(e) {}
+          if (st.wrap && st.wrap.parentNode) st.wrap.parentNode.removeChild(st.wrap);
+          openChartState.delete(id);
+        }
+      }
+    }
+
+    async function refreshOpenCharts(opens) {
+      pruneOpenCharts((opens || []).map(t => t.id).filter(Boolean));
+      for (const t of (opens || [])) {
+        if (!t.id) continue;
+        const st = ensureOpenChart(t);
+        try {
+          const qs = new URLSearchParams({
+            symbol: t.symbol,
+            venue: t.venue || "crypto",
+            limit: "120",
+            trade_id: String(t.id),
+          });
+          const res = await fetch("/api/chart?" + qs);
+          const data = await res.json();
+          applySeriesData(st, data);
+        } catch (e) {
+          /* ignore chart fetch blips */
+        }
+      }
+    }
+
+    function openTradeModal(tradeId) {
+      const backdrop = document.getElementById("chartModal");
+      backdrop.classList.add("show");
+      document.getElementById("modalTitle").textContent = `Trade #${tradeId}`;
+      const el = document.getElementById("modalChart");
+      if (modalChart) {
+        try { modalChart.chart.remove(); } catch(e) {}
+        modalChart = null;
+      }
+      el.innerHTML = "";
+      const chart = LightweightCharts.createChart(el, { ...chartTheme(), height: 360, width: el.clientWidth || 800 });
+      const candle = chart.addCandlestickSeries({
+        upColor: "#3ecf8e", downColor: "#e85d5d",
+        borderUpColor: "#3ecf8e", borderDownColor: "#e85d5d",
+        wickUpColor: "#3ecf8e", wickDownColor: "#e85d5d",
+      });
+      const mid = chart.addLineSeries({ color: "#e6b35a", lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+      const upper = chart.addLineSeries({ color: "#3a7ca5", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
+      const lower = chart.addLineSeries({ color: "#3a7ca5", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
+      modalChart = { chart, candle, mid, upper, lower, el };
+      fetch("/api/chart/trade/" + tradeId)
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById("modalTitle").textContent =
+            `Trade #${tradeId} · ${data.symbol || ""} · entry/exit`;
+          applySeriesData(modalChart, data);
+          chart.applyOptions({ width: el.clientWidth });
+        })
+        .catch(e => {
+          document.getElementById("modalTitle").textContent = "Chart error: " + e;
+        });
+    }
+
+    document.getElementById("modalClose").onclick = () => {
+      document.getElementById("chartModal").classList.remove("show");
+      if (modalChart) {
+        try { modalChart.chart.remove(); } catch(e) {}
+        modalChart = null;
+      }
+    };
+    document.getElementById("chartModal").addEventListener("click", (ev) => {
+      if (ev.target.id === "chartModal") document.getElementById("modalClose").click();
+    });
 
     function renderTable(rows, cols) {
       if (!rows || !rows.length) return "<div style='color:var(--muted)'>None</div>";
@@ -264,7 +498,13 @@
               return `<span class="${cls}">${lab}</span>`;
             }
           },
+          { label: "Chart", render: r => r.id
+              ? `<button type="button" class="chart-btn" data-tid="${r.id}">View</button>`
+              : "—" },
         ]);
+        document.querySelectorAll("#closed .chart-btn").forEach(btn => {
+          btn.onclick = () => openTradeModal(btn.dataset.tid);
+        });
 
         document.getElementById("rejected").innerHTML = renderTable(data.rejected_signals, [
           { label: "Symbol", render: r => r.symbol },
@@ -308,6 +548,8 @@
         document.getElementById("status").innerHTML =
           `status=${data.status} | mode=${data.mode} | cycle=${data.cycle} | session=${sessName} ${sess.hours || ""} | resets=${data.capital_resets ?? 0} | pattern≥${thr} | last_report=${dr.day || "—"} | refresh=5s${kill}`;
         document.getElementById("clock").textContent = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
+
+        await refreshOpenCharts(data.open_trades || []);
       } catch (e) {
         document.getElementById("status").textContent = "monitor fetch failed: " + e;
       }

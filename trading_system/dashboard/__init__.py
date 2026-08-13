@@ -7,7 +7,6 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from trading_system.engine import TradingEngine, get_engine
 
@@ -38,6 +37,21 @@ def create_app(engine: TradingEngine | None = None) -> FastAPI:
     async def monitor() -> dict:
         assert eng is not None
         return eng.get_monitor_payload()
+
+    @app.get("/api/chart")
+    async def chart(
+        symbol: str,
+        venue: str = "crypto",
+        limit: int = 120,
+        trade_id: int | None = None,
+    ) -> dict:
+        assert eng is not None
+        return eng.get_chart(symbol, venue=venue, limit=limit, trade_id=trade_id)
+
+    @app.get("/api/chart/trade/{trade_id}")
+    async def chart_trade(trade_id: int, pad_bars: int = 30) -> dict:
+        assert eng is not None
+        return eng.get_trade_chart(trade_id, pad_bars=pad_bars)
 
     @app.get("/api/health")
     async def health() -> dict:

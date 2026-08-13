@@ -1005,6 +1005,52 @@ def test_adaptive_time_stop_prefers_early_window():
     assert should_adaptive_time_stop(pos, 100.12, 10.0, preferred_hold_minutes=3, max_hold_minutes=10) is True
 
 
+def test_winner_skips_time_stop(cfg, tmp_db):
+    """Profit trades must not close on time_stop even past max_hold."""
+    from datetime import timedelta
+
+    from trading_system.execution import PaperExecutor
+    from trading_system.portfolio import Portfolio
+
+    port = Portfolio(tmp_db, 100)
+    cfg.execution.leverage = 20.0
+    cfg.execution.fee_bps = 4.0
+    cfg.execution.slippage_bps = 2.0
+    cfg.strategy.tp_mode = "trend_fade"
+    cfg.strategy.max_hold_minutes = 1
+    cfg.strategy.preferred_hold_minutes = 1
+    cfg.strategy.min_hold_minutes = 0
+    ex = PaperExecutor(cfg, tmp_db, port)
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        take_profit=None,
+        stop_loss=60000,
+        timestamp=datetime.now(timezone.utc),
+        regime=MarketRegime.RANGING,
+        features={"sl_budget_cash": 0.40, "sl_mode": "margin_pct"},
+    )
+    pos = ex.open_trade(sig, 10.0, 65000)
+    past = datetime.now(timezone.utc) - timedelta(minutes=15)
+    with tmp_db.connection() as conn:
+        conn.execute(
+            "UPDATE trades SET entry_time=? WHERE id=?",
+            (past.isoformat(), pos.id),
+        )
+    closed = ex.manage_open(
+        {"BTC/USDT": 65260.0},
+        forex_session_open=True,
+        close_fx_at_session_end=False,
+        feature_rows={"BTC/USDT": {}},
+    )
+    assert closed == []
+    assert len(port.open_positions()) == 1
+
+
 def test_learning_display_labels():
     from trading_system.learning import learning_display
 

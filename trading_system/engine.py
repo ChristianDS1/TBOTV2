@@ -62,6 +62,7 @@ class TradingEngine:
         self._cycle = 0
         self.status_message = "initialized"
         self._last_daily_report_path: str | None = None
+        self._ohlcv_cache: dict[str, Any] = {}  # symbol -> DataFrame
 
         # Initialize daily report day marker
         if self.db.get_state("last_daily_report_day") is None:
@@ -134,6 +135,7 @@ class TradingEngine:
                 )
                 mark_prices[sym] = float(df["close"].iloc[-1])
                 feature_rows[sym] = self._feature_row(df)
+                self._ohlcv_cache[sym] = df
                 self._process_symbol(sym, Venue.CRYPTO, df)
             self.risk.mark_data("crypto", True)
             venue_health["crypto"] = self.crypto.health()
@@ -151,6 +153,7 @@ class TradingEngine:
                 )
                 mark_prices[sym] = float(df["close"].iloc[-1])
                 feature_rows[sym] = self._feature_row(df)
+                self._ohlcv_cache[sym] = df
                 if self.forex.is_tradable_now(sym):
                     self._process_symbol(sym, Venue.FOREX, df)
             self.risk.mark_data("forex", True)
@@ -404,6 +407,191 @@ class TradingEngine:
             venues=venue_health,
             timestamp=datetime.now(timezone.utc),
         )
+
+    def _fetch_ohlcv_df(self, symbol: str, venue: str, limit: int | None = None):
+        import pandas as pd
+
+        lim = int(limit or self.cfg.timeframes.lookback_bars)
+        cached = self._ohlcv_cache.get(symbol)
+        if cached is not None and len(cached) >= min(lim, 30):
+            return cached.tail(lim).reset_index(drop=True)
+
+        tf = self.cfg.timeframes.primary
+        if venue == "forex" or symbol in self.cfg.symbols.forex:
+            df = self.forex.get_ohlcv(symbol, tf, lim)
+        else:
+            df = self.crypto.get_ohlcv(symbol, tf, lim)
+        self._ohlcv_cache[symbol] = df
+        return df.tail(lim).reset_index(drop=True) if hasattr(df, "tail") else df
+
+    @staticmethod
+    def _bar_time_unix(ts) -> int:
+        import pandas as pd
+
+        t = pd.Timestamp(ts)
+        if t.tzinfo is None:
+            t = t.tz_localize("UTC")
+        else:
+            t = t.tz_convert("UTC")
+        return int(t.timestamp())
+
+    def _chart_from_df(
+        self,
+        df,
+        *,
+        markers: list[dict[str, Any]] | None = None,
+        symbol: str = "",
+        venue: str = "",
+    ) -> dict[str, Any]:
+        cfg = self.cfg.strategy
+        feat = build_features(
+            df,
+            bb_period=cfg.bb_period,
+            bb_std=cfg.bb_std,
+            rsi_period=cfg.rsi_period,
+            macd_fast=cfg.macd_fast,
+            macd_slow=cfg.macd_slow,
+        )
+        candles: list[dict[str, Any]] = []
+        bb: list[dict[str, Any]] = []
+        for _, row in feat.iterrows():
+            t = self._bar_time_unix(row["timestamp"])
+            candles.append(
+                {
+                    "time": t,
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                }
+            )
+            mid = row.get("bb_mid")
+            up = row.get("bb_upper")
+            lo = row.get("bb_lower")
+            if mid is not None and up is not None and lo is not None:
+                import pandas as pd
+
+                if not (pd.isna(mid) or pd.isna(up) or pd.isna(lo)):
+                    bb.append(
+                        {
+                            "time": t,
+                            "mid": float(mid),
+                            "upper": float(up),
+                            "lower": float(lo),
+                        }
+                    )
+        payload = {
+            "symbol": symbol,
+            "venue": venue,
+            "candles": candles,
+            "bb": bb,
+            "markers": markers or [],
+        }
+        if candles:
+            times = [c["time"] for c in candles]
+            snapped = []
+            for m in payload["markers"]:
+                t = int(m["time"])
+                # snap to nearest candle time (lightweight-charts requirement)
+                nearest = min(times, key=lambda x: abs(x - t))
+                mm = dict(m)
+                mm["time"] = nearest
+                snapped.append(mm)
+            payload["markers"] = snapped
+        return payload
+
+    def get_chart(
+        self,
+        symbol: str,
+        venue: str = "crypto",
+        limit: int = 120,
+        trade_id: int | None = None,
+    ) -> dict[str, Any]:
+        df = self._fetch_ohlcv_df(symbol, venue, limit=max(limit, 60))
+        markers: list[dict[str, Any]] = []
+        if trade_id is not None:
+            pos = self.db.get_trade(int(trade_id))
+            if pos is not None:
+                markers.extend(self._trade_markers(pos))
+        else:
+            for pos in self.portfolio.open_positions():
+                if pos.symbol == symbol:
+                    markers.extend(self._trade_markers(pos, exit_included=False))
+        return self._chart_from_df(
+            df.tail(limit).reset_index(drop=True),
+            markers=markers,
+            symbol=symbol,
+            venue=venue,
+        )
+
+    def get_trade_chart(self, trade_id: int, pad_bars: int = 30) -> dict[str, Any]:
+        pos = self.db.get_trade(int(trade_id))
+        if pos is None:
+            return {"error": "trade_not_found", "candles": [], "bb": [], "markers": []}
+        venue = pos.venue.value if hasattr(pos.venue, "value") else str(pos.venue)
+        df = self._fetch_ohlcv_df(pos.symbol, venue, limit=self.cfg.timeframes.lookback_bars)
+        import pandas as pd
+
+        entry_ts = pd.Timestamp(pos.entry_time)
+        if entry_ts.tzinfo is None:
+            entry_ts = entry_ts.tz_localize("UTC")
+        exit_ts = pd.Timestamp(pos.exit_time) if pos.exit_time else pd.Timestamp.now(tz="UTC")
+        if exit_ts.tzinfo is None:
+            exit_ts = exit_ts.tz_localize("UTC")
+
+        ts = pd.to_datetime(df["timestamp"], utc=True)
+        start = entry_ts - pd.Timedelta(minutes=pad_bars)
+        end = exit_ts + pd.Timedelta(minutes=pad_bars)
+        mask = (ts >= start) & (ts <= end)
+        window = df.loc[mask].reset_index(drop=True)
+        if window.empty:
+            window = df.tail(max(pad_bars * 2, 60)).reset_index(drop=True)
+        return self._chart_from_df(
+            window,
+            markers=self._trade_markers(pos, exit_included=True),
+            symbol=pos.symbol,
+            venue=venue,
+        )
+
+    def _trade_markers(
+        self, pos, *, exit_included: bool = True
+    ) -> list[dict[str, Any]]:
+        is_call = (pos.side.value if hasattr(pos.side, "value") else str(pos.side)).lower() == "call"
+        color = "#3ecf8e" if is_call else "#e85d5d"
+        markers = [
+            {
+                "time": self._bar_time_unix(pos.entry_time),
+                "position": "belowBar" if is_call else "aboveBar",
+                "shape": "arrowUp" if is_call else "arrowDown",
+                "color": color,
+                "text": f"IN {pos.side.value if hasattr(pos.side, 'value') else pos.side}",
+                "price": float(pos.entry_price),
+            }
+        ]
+        if exit_included and pos.exit_time is not None:
+            markers.append(
+                {
+                    "time": self._bar_time_unix(pos.exit_time),
+                    "position": "aboveBar" if is_call else "belowBar",
+                    "shape": "circle",
+                    "color": "#e6b35a",
+                    "text": f"OUT {pos.exit_reason or ''}",
+                    "price": float(pos.exit_price) if pos.exit_price is not None else None,
+                }
+            )
+        if pos.stop_loss is not None:
+            markers.append(
+                {
+                    "time": self._bar_time_unix(pos.entry_time),
+                    "position": "aboveBar",
+                    "shape": "square",
+                    "color": "#8fa3b8",
+                    "text": "SL",
+                    "price": float(pos.stop_loss),
+                    "line": True,
+                }
+            )
+        return markers
 
     def force_daily_report(self, day: str | None = None) -> str:
         path = write_daily_report(self.db, learning=self.learning, day=day)
