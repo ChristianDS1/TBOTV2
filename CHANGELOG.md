@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.15
+
+- EXIT ENGINE Gen-5: adaptive exits with MFE/giveback tracking, weakening vs reversal vs stale
+- Remove "fade only if net>0" gate that ignored valid reversals after giveback
+- New exit reasons: `trend_reversal`, `profit_protection`, `stale_position` (SL unchanged; no fixed early TP)
+- Config block `exit:` (stale 60m safety, giveback thresholds) — does not touch entries or +50% objective
+
 ## 0.1.14
 
 - Monitor charts: keep entry + stop-loss inside the visible price scale (FX SL was off-screen because candle zoom only covered BB width); draw SL as a clear red price line

@@ -67,12 +67,25 @@ strategy:
   rsi_overbought: 70
   macd_fast: [5, 8, 9]
   macd_slow: [13, 21, 9]
-  # Hold: min_hold gates trend-fade; max_hold is metadata (no time_stop)
+  # Hold: min_hold gates early adaptive exits; max_hold is strategy metadata
   min_hold_minutes: 1
   preferred_hold_minutes: 3
   max_hold_minutes: 10
   discovery_phase: true
   entry_confidence_floor: 0  # do not block in discovery
+
+# Exit engine only — does not affect entries / daily +50% objective
+exit:
+  stale_position_max_minutes: 60
+  stale_soft_minutes: 30
+  stale_progress_minutes: 10
+  min_mfe_pct_for_protection: 0.30
+  giveback_protect_pct: 0.35
+  giveback_reversal_pct: 0.45
+  fade_score_in_profit: 2
+  fade_score_flat_or_loss: 3
+  fade_score_with_mfe_giveback: 1
+  log_every_seconds: 60
 
 learning:
   phase: discovery  # discovery | pattern | optimization | exploitation

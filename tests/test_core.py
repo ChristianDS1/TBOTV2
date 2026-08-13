@@ -974,7 +974,7 @@ def test_trend_fade_exit_requires_score_and_net(cfg, tmp_db):
         feature_rows={"BTC/USDT": fade_row},
     )
     assert len(closed) == 1
-    assert closed[0].exit_reason == "trend_exit"
+    assert closed[0].exit_reason == "trend_reversal"
     assert closed[0].pnl is not None and closed[0].pnl > 0
 
 

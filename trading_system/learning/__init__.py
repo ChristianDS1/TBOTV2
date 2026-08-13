@@ -177,7 +177,13 @@ def classify_strategy_outcome(pos: Position) -> tuple[str, bool]:
 
     if pos.exit_reason == "take_profit":
         strategy_win = True
-    elif pos.exit_reason == "trend_exit":
+    elif pos.exit_reason in (
+        "trend_exit",
+        "trend_reversal",
+        "profit_protection",
+    ):
+        strategy_win = net > 0
+    elif pos.exit_reason == "stale_position":
         strategy_win = net > 0
     elif gross is not None:
         strategy_win = gross > 0

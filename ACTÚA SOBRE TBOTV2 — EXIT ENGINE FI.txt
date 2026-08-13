@@ -1,0 +1,617 @@
+ACTÚA SOBRE TBOTV2 — EXIT ENGINE FIX / GEN-5 EXIT REPAIR
+
+IMPORTANTE:
+NO rediseñes la estrategia de entrada.
+NO cambies BB/RSI/MACD.
+NO cambies el candidate generator.
+NO cambies leverage.
+NO cambies position sizing.
+NO cambies fees.
+NO cambies el objetivo diario de equity.
+NO vuelvas a introducir un TP fijo que cierre rápidamente las operaciones.
+NO optimices parámetros buscando mayor P&L.
+
+El único objetivo de este ajuste es corregir el EXIT ENGINE.
+
+==================================================
+1. PROBLEMA ACTUAL
+==================================================
+
+La estrategia actual está diseñada para:
+
+ENTRY
+→ si el precio va en la dirección esperada
+→ dejar correr la posición
+→ NO cerrar prematuramente por un TP pequeño
+→ detectar debilitamiento/reversión
+→ salir cuando exista evidencia razonable de que la tendencia favorable está terminando.
+
+Actualmente observamos este comportamiento:
+
+LONG:
+entry
+→ precio sube y alcanza profit significativo
+→ posteriormente empieza a caer
+→ el sistema no reconoce a tiempo el cambio de tendencia
+→ devuelve gran parte o todo el profit
+→ puede terminar en SL
+
+También ocurre:
+
+entry
+→ precio sube
+→ después baja
+→ no toca SL
+→ no genera suficiente trend_fade
+→ no existe time-stop efectivo
+→ posición permanece abierta durante horas.
+
+Esto NO es el comportamiento deseado.
+
+==================================================
+3. FILOSOFÍA DE EXIT QUE QUEREMOS
+==================================================
+
+NO queremos:
+
+ENTRY
+→ pequeño profit
+→ TP inmediato
+→ EXIT
+
+Queremos:
+
+ENTRY
+→ movimiento favorable
+→ HOLD mientras la tendencia continúa
+→ detectar weakening
+→ proteger el profit si ya existe
+→ detectar reversal
+→ EXIT
+
+Ejemplo LONG:
+
+100.00 entry
+
+100.20
+100.40
+100.70
+101.00   ← nuevo máximo / MFE
+100.90
+100.75
+100.60
+→ aparece deterioro/reversión
+→ EXIT
+
+No queremos esperar obligatoriamente a:
+
+100.00
+99.90
+99.80
+99.70
+→ SL
+
+==================================================
+4. PRIMERA TAREA: AUDITAR EL EXIT ENGINE
+==================================================
+
+Antes de modificar código:
+
+Audita específicamente:
+
+- `manage_open()`
+- `detect_trend_fade()`
+- `trend_fade_min_score`
+- `can_take_profit_net_positive()`
+- cualquier `max_hold`
+- cualquier `time_stop`
+- stop-loss
+- TP/trend_fade mode
+- daily equity target
+- peak profit / MFE tracking
+- cualquier lógica que impida cerrar una operación aunque exista reversión.
+
+Busca explícitamente este problema:
+
+TREND FADE DETECTED
+        ↓
+¿net profit > 0?
+        ↓
+NO
+        ↓
+NO EXIT
+
+Si existe esta dependencia, documentarla.
+
+El objetivo es evitar que una señal válida de salida sea ignorada únicamente porque el P&L actual ya no es positivo.
+
+==================================================
+5. SEPARAR TRES CONCEPTOS
+==================================================
+
+El sistema debe distinguir:
+
+A) TREND WEAKENING
+La tendencia favorable pierde fuerza.
+
+B) TREND REVERSAL
+Existe evidencia suficiente de que la dirección favorable está terminando.
+
+C) STALE POSITION
+La operación permanece abierta demasiado tiempo sin progreso suficiente.
+
+No deben ser tratados como el mismo evento.
+
+==================================================
+6. NUEVA LÓGICA DE EXIT
+==================================================
+
+Implementar una salida adaptativa.
+
+LONG:
+
+1. Mientras el precio continúa haciendo progreso favorable:
+   → HOLD.
+
+2. Registrar continuamente:
+   - highest favorable price desde entry
+   - MFE
+   - current profit
+   - drawdown desde peak
+   - tiempo desde entry
+   - tiempo desde último nuevo favorable extreme.
+
+3. Detectar weakening antes de exigir reversal completo.
+
+4. Si existe profit significativo y empieza un deterioro:
+   → activar protección de profit.
+
+5. Si aparece reversal suficientemente confirmado:
+   → EXIT.
+
+SHORT:
+implementar exactamente lo mismo de forma simétrica.
+
+==================================================
+7. PEAK PROFIT / GIVEBACK PROTECTION
+==================================================
+
+Añadir una capa de protección basada en el máximo favorable alcanzado.
+
+Conceptualmente:
+
+LONG:
+
+entry
+→ MFE +0.10%
+→ MFE +0.30%
+→ MFE +0.60%
+→ MFE +1.00%
+
+Si posteriormente el precio devuelve una cantidad configurable del MFE:
+
+peak profit = +1.00%
+current profit = +0.65%
+
+giveback = 35% del MFE
+
+Esto NO debe cerrar inmediatamente.
+
+Debe combinarse con weakening/reversal.
+
+Ejemplo:
+
+MFE = +1.00%
+giveback = 10%
+→ probablemente HOLD
+
+MFE = +1.00%
+giveback = 30%
++ momentum deterioration
+→ posible exit
+
+MFE = +1.00%
+giveback = 40–50%
++ reversal confirmation
+→ EXIT
+
+Los thresholds deben ser CONFIGURABLES.
+
+NO optimizarlos automáticamente en esta etapa.
+
+No asumir valores mágicos.
+
+==================================================
+8. MUY IMPORTANTE: NO SALIR POR CUALQUIER VELA CONTRARIA
+==================================================
+
+NO hacer:
+
+LONG
+→ una vela roja
+→ EXIT
+
+Eso generaría salidas prematuras.
+
+La lógica debe distinguir:
+
+temporary pullback
+
+vs.
+
+actual trend reversal.
+
+Utilizar la información del libro de Bulkowski para identificar ese actual tren reversal, o Info que ya existe en el sistema:
+
+- MACD fast deterioration
+- MACD fast direction
+- RSI rollover
+- slow MACD deterioration/context
+- candle/rejection structure
+- LTF direction
+- HTF context
+- price structure
+
+
+==================================================
+9. TREND FADE SCORE
+==================================================
+
+Mantener la arquitectura existente de `trend_fade_score`, pero revisar si:
+
+`trend_fade_min_score = 2`
+
+es demasiado rígido para una salida temprana.
+
+NO cambiarlo arbitrariamente.
+
+En su lugar, permitir conceptualmente:
+
+WEAKENING:
+score bajo
+
+REVERSAL:
+score más alto
+
+Y permitir que el estado de la posición influya.
+
+Ejemplo:
+
+Si position profit <= 0:
+→ exigir mayor evidencia antes de salir.
+
+Si position profit > 0 y MFE significativo:
+→ permitir una salida con evidencia menor si existe deterioro + giveback.
+
+Esto es importante porque una operación que ya alcanzó +0.8% no debería necesitar esperar a una reversión completa hasta volver al entry.
+
+==================================================
+10. NO ELIMINAR EL STOP LOSS
+==================================================
+
+El SL permanece como protección de emergencia para TODOS los trades.
+
+La nueva lógica debe ser:
+
+TREND CONTINUES
+→ HOLD
+
+WEAKENING + profit protection
+→ monitor / protect
+
+REVERSAL CONFIRMED
+→ EXIT
+
+STALE POSITION
+→ EXIT
+
+STOP LOSS
+→ EXIT
+
+==================================================
+11. STALE POSITION / MAXIMUM DURATION
+==================================================
+
+Actualmente `max_hold_minutes` parece ser metadata y NO un time-stop efectivo.
+
+Eso es peligroso para una estrategia diseñada para operaciones de minutos.
+
+NO quiero volver al antiguo comportamiento de cerrar automáticamente cada 5–10 minutos.
+
+Pero sí quiero un safety timeout configurable.
+
+Añadir:
+
+`stale_position_max_minutes`
+
+como límite de seguridad.
+
+No debe ser un TP.
+
+No debe cerrar automáticamente todos los trades al alcanzar ese tiempo.
+
+Debe evaluar:
+
+- profit actual
+- MFE
+- tiempo desde último nuevo favorable extreme
+- trend state
+- momentum
+- drawdown desde MFE.
+
+Conceptualmente:
+
+Si:
+
+trade_duration > stale_position_max_minutes
+AND
+no meaningful favorable progress recently
+AND
+trend is no longer strongly favorable
+
+→ EXIT por `stale_position`.
+
+Pero:
+
+si la posición sigue haciendo nuevos highs/lows favorables
+→ permitir HOLD.
+
+Esto evita posiciones abiertas durante horas sin destruir operaciones que siguen tendiendo correctamente.
+
+maximum_trade_duration sera de 60 min, y SOLO como emergency/stale-position exit, no como TP.
+Será así:
+1–10 min
+→ estrategia normal
+
+10–30 min
+→ seguir si está progresando
+
+30–60 min
+→ exigir evidencia fuerte de continuación
+
+>60 min
+→ cerrar por stale trade
+
+==================================================
+12. MUY IMPORTANTE: NO HACER QUE EL +50% DIARIO CAMBIE EL EXIT
+==================================================
+
+`daily_equity_gain_pct = 50%`
+
+es un objetivo de equity/discovery.
+
+NO usarlo para:
+
+- mantener posiciones más tiempo
+- evitar exits
+- modificar trend fade
+- modificar stop
+- modificar TP
+- aumentar leverage
+- aumentar risk.
+
+No tocar esa lógica en este ajuste.
+
+==================================================
+13. EXIT REASONS OBLIGATORIOS
+==================================================
+
+Cada cierre debe tener una razón explícita:
+
+- `stop_loss`
+- `trend_reversal`
+- `profit_protection`
+- `stale_position`
+- `take_profit` solamente si realmente existe un TP configurado
+- otros reasons existentes válidos.
+
+NO etiquetar un exit de trend reversal como take_profit.
+
+==================================================
+14. LOGGING OBLIGATORIO
+==================================================
+
+Para cada posición abierta registrar:
+
+entry timestamp
+entry price
+fill price
+side
+current price
+current pnl
+MFE
+MAE
+peak favorable price
+peak pnl
+current drawdown from peak
+giveback_pct
+trade_duration_minutes
+minutes_since_last_favorable_extreme
+trend_fade_score
+trend_fade_components
+weakening_state
+reversal_state
+HTF state
+exit reason
+exit price
+gross pnl
+fees
+slippage
+net pnl
+
+Especialmente quiero poder responder:
+
+"El trade llegó a +X%, ¿por qué no salió cuando empezó a revertirse?"
+
+==================================================
+15. TESTS
+
+Crear tests específicos para:
+
+TEST 1
+LONG:
+precio sube significativamente
+→ continúa subiendo
+→ HOLD.
+
+TEST 2
+LONG:
+precio sube
+→ pequeño pullback
+→ HOLD.
+
+TEST 3
+LONG:
+precio sube mucho
+→ comienza weakening
+→ giveback moderado
+→ no salir prematuramente.
+
+TEST 4
+LONG:
+precio sube mucho
+→ reversal confirmado
+→ EXIT.
+
+TEST 5
+SHORT:
+mismo comportamiento simétrico.
+
+TEST 6
+Trade llega a profit
+→ reversal detectado
+→ EXIT aunque current P&L haya disminuido respecto al peak.
+
+TEST 7
+Trade está ligeramente positivo
+→ trend fade detectado
+→ EXIT si la evidencia es suficiente.
+
+TEST 8
+Trade está negativo
+→ trend fade débil
+→ NO salir únicamente por una señal débil.
+
+TEST 9
+Trade permanece abierto demasiado tiempo
+→ sin favorable progress
+→ stale_position exit.
+
+TEST 10
+Trade continúa haciendo nuevos highs/lows favorables
+→ NO stale exit aunque supere el tiempo nominal.
+
+TEST 11
+Stop loss
+→ siempre funciona independientemente de trend fade.
+
+TEST 12
+daily_equity_gain_pct = 50%
+→ no altera exit logic.
+
+==================================================
+16. NO LOOKAHEAD
+==================================================
+
+Toda decisión de salida debe utilizar solamente información disponible hasta la vela actual cerrada / tick disponible según la arquitectura actual.
+
+No usar:
+
+- future candles
+- future highs/lows
+- future MFE
+- future reversal.
+
+==================================================
+17. NO CAMBIAR LA ENTRADA
+==================================================
+
+Esto es CRÍTICO.
+
+NO modificar:
+
+- BB 20/2
+- RSI 10
+- MACD 5/8/9
+- MACD 13/21/9
+- rejection pattern
+- candidate generator
+- Gen-5 labels
+- ML
+- leverage
+- fees
+- slippage
+- position sizing.
+
+Solo EXIT ENGINE.
+
+==================================================
+18. PAPER VALIDATION
+==================================================
+
+Después de implementar:
+
+1. Ejecutar tests.
+2. Ejecutar una corrida paper corta.
+3. NO optimizar.
+4. Comparar contra el comportamiento anterior.
+
+Reportar:
+
+- número de trades
+- average hold
+- median hold
+- max hold
+- exits por reason
+- MFE average
+- MAE average
+- average peak-to-exit giveback
+- cuántos trades alcanzaron profit significativo y posteriormente fueron cerrados
+- cuántos terminaron en SL después de haber tenido MFE significativo
+- gross P&L
+- fees
+- slippage
+- net P&L.
+
+Especialmente:
+
+¿Cuántos trades que anteriormente se quedaban abiertos durante horas ahora salen correctamente?
+
+¿Cuántos trades que anteriormente llegaban a SL después de haber tenido un MFE significativo ahora salen mediante `trend_reversal` o `profit_protection`?
+
+==================================================
+19. CRITERIO DE ÉXITO
+==================================================
+
+NO definir éxito como:
+
+"ganó más dinero en una corrida".
+
+El objetivo de este cambio es:
+
+1. evitar posiciones indefinidamente abiertas;
+2. detectar reversals más oportunamente;
+3. preservar parte del MFE;
+4. evitar salidas prematuras;
+5. mantener SL como protección;
+6. mantener la estrategia de entrada intacta;
+7. generar datos de exit de alta calidad para ML.
+
+Al final entrega:
+
+A) Archivos modificados.
+B) Diff conceptual exacto.
+C) Exit state machine.
+D) Parámetros nuevos.
+E) Tests ejecutados.
+F) Resultado del paper.
+G) Distribución de exit reasons.
+H) Comparación antes vs después.
+I) Cualquier problema que siga existiendo.
+
+
+NO cambiar la estrategia de entrada.
+
+NO declarar que la estrategia tiene edge simplemente porque el exit engine mejore.
+
+El objetivo de este ajuste es arreglar correctamente la gestión de posiciones y generar mejores datos para el entrenamiento del ML.

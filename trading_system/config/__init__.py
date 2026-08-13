@@ -119,6 +119,21 @@ class ForexSessionConfig(BaseModel):
     close_intraday_at_session_end: bool = True
 
 
+class ExitConfig(BaseModel):
+    """Adaptive exit engine (Gen-5). Does not change entry logic."""
+
+    stale_position_max_minutes: float = 60.0
+    stale_soft_minutes: float = 30.0
+    stale_progress_minutes: float = 10.0
+    min_mfe_pct_for_protection: float = 0.30  # price %
+    giveback_protect_pct: float = 0.35
+    giveback_reversal_pct: float = 0.45
+    fade_score_in_profit: int = 2
+    fade_score_flat_or_loss: int = 3
+    fade_score_with_mfe_giveback: int = 1
+    log_every_seconds: float = 60.0
+
+
 class ExecutionConfig(BaseModel):
     fee_bps: float = 4.0
     slippage_bps: float = 2.0
@@ -186,6 +201,7 @@ class AppConfig(BaseModel):
     learning: LearningConfig = Field(default_factory=LearningConfig)
     forex_session: ForexSessionConfig = Field(default_factory=ForexSessionConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    exit: ExitConfig = Field(default_factory=ExitConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     crypto: CryptoExchangeConfig = Field(default_factory=CryptoExchangeConfig)

@@ -130,20 +130,16 @@ def _f(row: dict, key: str, default: float | None = None) -> float | None:
         return default
 
 
-def detect_trend_fade(
-    side: Side | str,
-    row: dict,
-    *,
-    min_score: int = 2,
-) -> tuple[bool, list[str]]:
+def score_trend_fade(side: Side | str, row: dict) -> tuple[int, list[str]]:
     """
-    Score opposing rejection + momentum fade. True when score >= min_score.
+    Score opposing rejection + momentum fade components (no threshold).
 
     CALL fade signals (PUT mirrored):
       1) rejection_bear
       2) macd_fast hist falling 2 bars OR macd_fast_bear_cross
       3) RSI rollover from >=50
       4) macd_slow_hist deteriorating vs trade direction
+      5) chart_reversal / ltf_turn when present
     """
     side_v = side.value if isinstance(side, Side) else str(side).lower()
     is_call = side_v == "call"
@@ -220,7 +216,18 @@ def detect_trend_fade(
     elif not is_call and ltf == "turn_up":
         reasons.append("ltf_turn")
 
-    return len(reasons) >= int(min_score), reasons
+    return len(reasons), reasons
+
+
+def detect_trend_fade(
+    side: Side | str,
+    row: dict,
+    *,
+    min_score: int = 2,
+) -> tuple[bool, list[str]]:
+    """True when fade component score >= min_score (back-compat wrapper)."""
+    score, reasons = score_trend_fade(side, row)
+    return score >= int(min_score), reasons
 
 
 # Back-compat alias

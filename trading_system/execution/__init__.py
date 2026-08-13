@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -11,11 +12,11 @@ from trading_system.config import AppConfig
 from trading_system.database import Database
 from trading_system.execution.edge import (
     can_take_profit_net_positive,
-    detect_trend_fade,
     estimate_close_net,
     position_notional,
     unrealized_pnl_on_notional,
 )
+from trading_system.execution.exit_engine import decide_exit, maybe_log_exit_eval
 from trading_system.portfolio import Portfolio
 from trading_system.strategies import compute_sl_from_margin_pct
 from trading_system.types import Position, Signal, TradeStatus
@@ -28,6 +29,7 @@ class PaperExecutor:
         self.cfg = cfg
         self.db = db
         self.portfolio = portfolio
+        self._exit_log_ts: dict[int, float] = {}
 
     def _leverage(self) -> float:
         return max(1.0, float(self.cfg.execution.leverage or 1.0))
@@ -140,7 +142,12 @@ class PaperExecutor:
         net = raw_fill_pnl - exit_fees
 
         # Cost erosion: strategy achieved target / gross positive but net red
-        strategy_ok = reason in ("take_profit", "trend_exit") or gross > 0
+        strategy_ok = reason in (
+            "take_profit",
+            "trend_exit",
+            "trend_reversal",
+            "profit_protection",
+        ) or gross > 0
         cost_erosion = bool(strategy_ok and net <= 0)
 
         pos.exit_price = fill
@@ -175,6 +182,7 @@ class PaperExecutor:
     ) -> list[Position]:
         closed: list[Position] = []
         now = datetime.now(timezone.utc)
+        mono = time.monotonic()
         liq_frac = float(self.cfg.execution.liquidation_margin_fraction or 0.9)
         require_pos_net = bool(
             getattr(self.cfg.execution, "tp_require_positive_net", True)
@@ -182,7 +190,8 @@ class PaperExecutor:
         )
         feature_rows = feature_rows or {}
         tp_mode = (getattr(self.cfg.strategy, "tp_mode", "trend_fade") or "trend_fade").lower()
-        fade_min = int(getattr(self.cfg.strategy, "trend_fade_min_score", 2) or 2)
+        exit_cfg = self.cfg.exit
+        min_hold = float(getattr(self.cfg.strategy, "min_hold_minutes", 1) or 1)
 
         for pos in list(self.portfolio.open_positions()):
             px = mark_prices.get(pos.symbol)
@@ -236,33 +245,43 @@ class PaperExecutor:
                     closed.append(self.close_trade(pos, px, "stop_loss"))
                     continue
 
-            min_hold = float(getattr(self.cfg.strategy, "min_hold_minutes", 1) or 1)
-            held_min = (now - pos.entry_time).total_seconds() / 60.0
-
-            # Trend-fade exit (dynamic TP). No time_stop — hold until fade / SL / liq.
-            if tp_mode == "trend_fade" and held_min >= min_hold:
+            # Adaptive exit (trend_fade mode): MFE / weakening / reversal / stale
+            if tp_mode == "trend_fade":
                 row = feature_rows.get(pos.symbol) or {}
-                faded, fade_reasons = detect_trend_fade(
-                    pos.side, row, min_score=fade_min
+                decision = decide_exit(
+                    pos,
+                    px,
+                    row,
+                    feat,
+                    exit_cfg,
+                    fee_bps=fee_bps,
+                    slip_bps=slip_bps,
+                    min_hold_minutes=min_hold,
+                    now=now,
                 )
-                if faded:
-                    ok_net = can_take_profit_net_positive(
-                        pos,
-                        px,
-                        fee_bps,
-                        slip_bps,
-                    )
-                    if (not require_pos_net) or ok_net:
-                        # stash reasons into features for debugging (best-effort)
-                        try:
-                            feat["trend_fade_reasons"] = fade_reasons
-                            pos.features_json = json.dumps(feat)
-                        except Exception:
-                            pass
-                        closed.append(self.close_trade(pos, px, "trend_exit"))
-                        continue
+                feat["exit_eval"] = decision.snapshot
+                feat["trend_fade_score"] = decision.score
+                feat["trend_fade_components"] = decision.components
+                feat["weakening_state"] = decision.state == "weakening" or bool(
+                    decision.snapshot.get("weakening_state")
+                )
+                feat["reversal_state"] = decision.state == "reversal"
+                pos.features_json = json.dumps(feat)
+                self.db.update_trade(pos)
+                maybe_log_exit_eval(
+                    pos,
+                    decision,
+                    last_log_ts=self._exit_log_ts,
+                    log_every_seconds=float(exit_cfg.log_every_seconds),
+                    monotonic_now=mono,
+                )
+                if decision.reason:
+                    feat["exit_snapshot"] = decision.snapshot
+                    pos.features_json = json.dumps(feat)
+                    closed.append(self.close_trade(pos, px, decision.reason))
+                    continue
 
-            # Legacy fixed-price TP
+            # Legacy fixed-price TP (only when take_profit is set)
             if pos.take_profit is not None:
                 hit_tp = (
                     (pos.side.value == "call" and px >= pos.take_profit)
