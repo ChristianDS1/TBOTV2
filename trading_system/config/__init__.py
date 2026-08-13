@@ -81,7 +81,7 @@ class LearningConfig(BaseModel):
     loss_confidence_penalty: float = 15.0
     loss_soft_reject: bool = True
     soft_reject_exclude_key_prefixes: list[str] = Field(
-        default_factory=lambda: ["strategy="]
+        default_factory=lambda: ["strategy=", "regime="]
     )
     # Pattern evidence and confidence effects scoped by UTC session buckets
     session_aware: bool = True
@@ -96,6 +96,14 @@ class LearningConfig(BaseModel):
     )
     retrain_every_n_trades: int = 50
     recency_half_life_trades: int = 100
+
+
+class ObjectiveConfig(BaseModel):
+    """North-star goal. Discovery learns; exploitation aims at daily equity target."""
+
+    name: str = "maximize_net_equity"
+    daily_equity_gain_pct: float = 50.0
+    chase_target_in_discovery: bool = False
 
 
 class CapitalPolicyConfig(BaseModel):
@@ -172,6 +180,7 @@ class AppConfig(BaseModel):
     symbols: SymbolsConfig = Field(default_factory=SymbolsConfig)
     timeframes: TimeframesConfig = Field(default_factory=TimeframesConfig)
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
+    objective: ObjectiveConfig = Field(default_factory=ObjectiveConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)
     forex_session: ForexSessionConfig = Field(default_factory=ForexSessionConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)

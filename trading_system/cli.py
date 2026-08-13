@@ -52,6 +52,14 @@ def main(argv: list[str] | None = None) -> None:
     purge.add_argument("--no-rebuild", action="store_true")
     purge.add_argument("--yes", "-y", action="store_true")
 
+    reset = sub.add_parser(
+        "reset-loss-learning",
+        help="Wipe loss/cost_erosion patterns and delete time_stop trades (keep other wins)",
+    )
+    reset.add_argument("--db", default=None, help="Optional path to trading.db")
+    reset.add_argument("--dry-run", action="store_true")
+    reset.add_argument("--yes", "-y", action="store_true")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
@@ -108,6 +116,22 @@ def main(argv: list[str] | None = None) -> None:
             argv.append("--dry-run")
         if args.no_rebuild:
             argv.append("--no-rebuild")
+        if args.yes:
+            argv.append("--yes")
+        sys.argv = [str(script), *argv]
+        runpy.run_path(str(script), run_name="__main__")
+
+    elif args.cmd == "reset-loss-learning":
+        import runpy
+
+        from trading_system.config import ROOT
+
+        script = ROOT / "scripts" / "reset_loss_learning.py"
+        argv = []
+        if args.db:
+            argv.extend(["--db", args.db])
+        if args.dry_run:
+            argv.append("--dry-run")
         if args.yes:
             argv.append("--yes")
         sys.argv = [str(script), *argv]

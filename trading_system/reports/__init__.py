@@ -9,7 +9,7 @@ from typing import Any
 
 from trading_system.config import ROOT, LearningConfig, SessionBucketConfig
 from trading_system.database import Database
-from trading_system.learning import LearningEngine, trade_session
+from trading_system.learning import LearningEngine, daily_objective_progress, trade_session
 from trading_system.learning.sessions import (
     DEFAULT_SESSION_BUCKETS,
     pattern_session_name,
@@ -257,8 +257,33 @@ def write_daily_report(
     resets = int(db.get_state("capital_resets") or "0")
     cash = db.get_state("cash") or "?"
 
+    start_eq = db.first_equity_on_day(day)
+    end_eq = None
+    try:
+        with db.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT equity FROM equity_curve
+                WHERE substr(timestamp, 1, 10) = ?
+                ORDER BY timestamp DESC LIMIT 1
+                """,
+                (day,),
+            ).fetchone()
+        if row:
+            end_eq = float(row["equity"])
+    except Exception:
+        end_eq = None
+    obj = daily_objective_progress(
+        start_equity=start_eq,
+        current_equity=end_eq if end_eq is not None else (start_eq or 0.0),
+        target_pct=50.0,
+        phase=str(progress.get("suggested_phase") or "discovery"),
+        chase_in_discovery=False,
+    )
+
     tp_n = sum(1 for t in day_trades if t.exit_reason == "take_profit")
     sl_n = sum(1 for t in day_trades if t.exit_reason == "stop_loss")
+    te_n = sum(1 for t in day_trades if t.exit_reason == "trend_exit")
     ts_n = sum(1 for t in day_trades if t.exit_reason == "time_stop")
 
     lines = [
@@ -268,16 +293,21 @@ def write_daily_report(
         "- Session-aware learning: patrones win/loss por bucket UTC "
         f"({'ON' if cfg.session_aware else 'OFF'})",
         "- Stop-loss fee-aware: budget = pérdida neta máx. (incluye fee de salida); TP sin cambio",
-        "- Take-profit: early rejection (`tp_band_fraction` / `tp_min_bps`), no BB mid",
-        "- Hold adaptativo: ventana preferida ~3m, máx 10m si sigue progresando al TP",
+        "- Take-profit: `trend_fade` (no fixed TP); SL = 4% margin NET",
+        "- No time_stop: hold until fade / stop_loss / liquidation / FX session_end",
         "- Rejection candle obligatoria + no entrar si ya se alejó demasiado del extremo",
         "- Paper leverage/margin según config (fees/PnL sobre notional)",
+        "- Objetivo: maximizar equity; norte +50%/día UTC en explotación (discovery no persigue el target)",
         "- Monitor: entry/exit px + etiqueta aprendizaje ganancia/pérdida; banner de sesión",
         "",
         "## 1. Aprendizaje del día",
         f"- Closed trades today: **{len(day_trades)}** (W {len(wins)} / L {len(losses)})",
         f"- Win rate today: **{wr:.1%}** | Expectancy: **{exp:.4f}** | Day PnL: **{day_pnl:.4f}**",
-        f"- Exits hoy: take_profit=**{tp_n}** | stop_loss=**{sl_n}** | time_stop=**{ts_n}**",
+        f"- Equity UTC day: start=**{obj['day_start_equity']:.2f}** "
+        f"end=**{obj['current_equity']:.2f}** gain=**{obj['day_gain_pct']:.1f}%** "
+        f"(objetivo +{obj['daily_target_pct']:.0f}% → {obj['progress_vs_target']:.1%} del target)",
+        f"- Objetivo: {obj['blurb']}",
+        f"- Exits hoy: take_profit=**{tp_n}** | stop_loss=**{sl_n}** | trend_exit=**{te_n}** | time_stop=**{ts_n}**",
         f"- Learning phase: **{progress.get('suggested_phase')}**",
         f"- Exploration ratio: **{float(progress.get('exploration_ratio') or 0):.1%}**",
         f"- Current session (al generar): **{progress.get('current_session', '—')}**",
@@ -417,7 +447,16 @@ def write_daily_report(
         "changes": len(changes),
         "capital_resets": resets,
         "phase": progress.get("suggested_phase"),
-        "exits": {"take_profit": tp_n, "stop_loss": sl_n, "time_stop": ts_n},
+        "exits": {
+            "take_profit": tp_n,
+            "stop_loss": sl_n,
+            "trend_exit": te_n,
+            "time_stop": ts_n,
+        },
+        "equity_day_start": obj["day_start_equity"],
+        "equity_day_end": obj["current_equity"],
+        "day_gain_pct": obj["day_gain_pct"],
+        "daily_target_pct": obj["daily_target_pct"],
         "by_session": _session_trade_stats(day_trades, cfg),
     }
     db.save_daily_report(day, str(path), summary)

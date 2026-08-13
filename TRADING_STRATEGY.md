@@ -26,7 +26,7 @@ Enter when ≥ `min_conditions` (default 3) **and**:
 - Paper defaults: margin `base_trade_size` 10, `leverage` 20
 - Legacy: `tp_mode: band_fraction|fixed_bps`, `sl_mode: rr_from_tp|band`
 
-**Hold window (adaptive):** `time_stop` applies only when estimated **net ≤ 0**. Winners (net &gt; 0) stay open until `trend_exit` (fade) or `stop_loss`. Losers/flat still use preferred→max hold (1–10m).
+**Hold:** no `time_stop`. Positions stay open until `trend_exit` (fade, net &gt; 0), `stop_loss` (4% margin NET), liquidation, or FX `session_end`. `min_hold_minutes` still gates fade. `max_hold_minutes` is metadata only.
 
 ### PUT (short)
 

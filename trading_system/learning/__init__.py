@@ -71,6 +71,40 @@ class StrategyRanker:
         return np.power(0.5, age / half)
 
 
+def daily_objective_progress(
+    *,
+    start_equity: float | None,
+    current_equity: float,
+    target_pct: float,
+    phase: str,
+    chase_in_discovery: bool = False,
+    name: str = "maximize_net_equity",
+) -> dict[str, Any]:
+    """UTC-day progress vs north-star daily equity gain. Does not change sizing."""
+    start = float(start_equity) if start_equity is not None else float(current_equity)
+    cur = float(current_equity)
+    tgt = float(target_pct)
+    gain_pct = ((cur - start) / start * 100.0) if start > 0 else 0.0
+    vs_target = (gain_pct / tgt) if tgt else 0.0
+    exploiting = (phase or "").lower() == "exploitation"
+    chase_now = bool(chase_in_discovery) or exploiting
+    blurb = (
+        f"explotar ganadoras hacia +{tgt:.0f}% equity/día"
+        if chase_now
+        else "ahora: aprender señales; después: aplicar ganadoras hacia +50%/día"
+    )
+    return {
+        "name": name,
+        "daily_target_pct": tgt,
+        "day_start_equity": start,
+        "current_equity": cur,
+        "day_gain_pct": gain_pct,
+        "progress_vs_target": vs_target,
+        "chase_now": chase_now,
+        "blurb": blurb,
+    }
+
+
 def confidence_bucket(confidence: float) -> str:
     c = max(0, min(100, confidence))
     lo = int(c // 5) * 5
@@ -462,4 +496,8 @@ class LearningEngine:
             "observing_patterns": len(self.db.get_patterns(status="observing")),
             "session_aware": self.cfg.session_aware,
             "current_session": self.current_session(),
+            "goal": (
+                "Learn winning indicator/context setups, then apply them to "
+                "maximize net equity (north star: +50% equity per UTC day in exploitation)."
+            ),
         }

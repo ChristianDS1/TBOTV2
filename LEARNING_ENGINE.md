@@ -1,5 +1,9 @@
 # Learning Engine
 
+## Objective
+
+North star: **maximize net equity**. Discovery learns which indicator/context setups win; exploitation should apply those toward **+50% equity per UTC day**. Config: `objective.daily_equity_gain_pct` (default 50). Discovery does **not** size or leverage to chase the daily target (`chase_target_in_discovery: false`).
+
 ## Phases
 
 discovery → pattern → optimization → exploitation (suggested by trade count; config sets starting phase).
@@ -39,7 +43,7 @@ Disable with `learning.session_aware: false`.
 - Effect: confidence penalty and optional **soft-reject** (`loss_soft_reject`).
 - Base strategy unchanged.
 - Scope: **only that key** — does **not** treat BB+RSI+MACD+rejection as all wrong.
-- Bare `session=…` and `…|strategy=…` keys are excluded from soft-reject (too broad).
+- Bare `session=…`, `…|strategy=…`, and `…|regime=…` keys are excluded from soft-reject (too broad — would halt a whole session or book). Symbol-level keys can still soft-reject.
 
 ### Strategy vs costs
 
@@ -63,6 +67,17 @@ Auto-generated at day change into `reports/daily/daily_YYYY-MM-DD.md`:
 5. Progreso del aprendizaje  
 
 Manual: `python -m trading_system report` or `POST /api/report`.
+
+## Reset loss learning (both PCs)
+
+Stop the bot, then:
+
+```bash
+python -m trading_system reset-loss-learning --dry-run
+python -m trading_system reset-loss-learning --yes
+```
+
+Deletes `time_stop` trades and all loss/cost_erosion pattern rows. Keeps win patterns except keys that contain `time_stop`. Does **not** replay remaining trades into loss counters.
 
 ## Exploration / ranking / ML
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.10
+
+- Explicit objective: maximize net equity; +50%/UTC-day is the exploitation north star (discovery does not chase it)
+- time_stop removed — exits are fade / SL / liquidation / FX session_end
+- `regime=` excluded from hard soft-reject
+- `reset-loss-learning` CLI/script: wipe loss evidence + delete time_stop trades (keep other wins); run on each machine after pull
+
 ## 0.1.9
 
 - Monitor session banner (current UTC region + hours)

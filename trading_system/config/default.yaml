@@ -1,5 +1,12 @@
 mode: paper  # paper | live — live requires explicit activation
 
+# Terminal goal: maximize net equity. Learning finds winning setups; exploitation
+# aims at +50% equity per UTC day. Discovery does NOT size/leverage to chase it.
+objective:
+  name: maximize_net_equity
+  daily_equity_gain_pct: 50.0
+  chase_target_in_discovery: false
+
 capital:
   initial: 100.0
   currency: EUR
@@ -57,7 +64,7 @@ strategy:
   rsi_overbought: 70
   macd_fast: [5, 8, 9]
   macd_slow: [13, 21, 9]
-  # Hold window: early rejection is primary (preferred); bot may extend to max if still progressing
+  # Hold: min_hold gates trend-fade; max_hold is metadata (no time_stop)
   min_hold_minutes: 1
   preferred_hold_minutes: 3
   max_hold_minutes: 10
@@ -76,6 +83,7 @@ learning:
   # Rollback: set to [] to restore old behavior that rejected on strategy=...
   soft_reject_exclude_key_prefixes:
     - "strategy="
+    - "regime="  # session|regime is too broad (would halt the whole book)
   # Session-aware learning: patterns confirm/apply per UTC time bucket (no cross-session bleed)
   session_aware: true
   session_buckets:

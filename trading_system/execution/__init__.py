@@ -14,7 +14,6 @@ from trading_system.execution.edge import (
     detect_trend_fade,
     estimate_close_net,
     position_notional,
-    should_adaptive_time_stop,
     unrealized_pnl_on_notional,
 )
 from trading_system.portfolio import Portfolio
@@ -195,14 +194,10 @@ class PaperExecutor:
                     closed.append(self.close_trade(pos, px, "stop_loss"))
                     continue
 
-            max_hold = float(self.cfg.strategy.max_hold_minutes)
-            pref_hold = float(
-                getattr(self.cfg.strategy, "preferred_hold_minutes", 3) or 3
-            )
             min_hold = float(getattr(self.cfg.strategy, "min_hold_minutes", 1) or 1)
             held_min = (now - pos.entry_time).total_seconds() / 60.0
 
-            # Trend-fade exit (dynamic TP) before time_stop
+            # Trend-fade exit (dynamic TP). No time_stop — hold until fade / SL / liq.
             if tp_mode == "trend_fade" and held_min >= min_hold:
                 row = feature_rows.get(pos.symbol) or {}
                 faded, fade_reasons = detect_trend_fade(
@@ -224,24 +219,6 @@ class PaperExecutor:
                             pass
                         closed.append(self.close_trade(pos, px, "trend_exit"))
                         continue
-
-            # Winners (net > 0): no time_stop — only fade or SL
-            net_for_ts = estimate_close_net(
-                pos,
-                px,
-                fee_bps,
-                slip_bps,
-            )
-            if net_for_ts <= 0 and should_adaptive_time_stop(
-                pos,
-                px,
-                held_min,
-                min_hold_minutes=min_hold,
-                preferred_hold_minutes=pref_hold,
-                max_hold_minutes=max_hold,
-            ):
-                closed.append(self.close_trade(pos, px, "time_stop"))
-                continue
 
             # Legacy fixed-price TP
             if pos.take_profit is not None:

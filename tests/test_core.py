@@ -332,7 +332,7 @@ def test_loss_pattern_soft_reject_at_20(cfg, tmp_db):
     cfg.learning.loss_soft_reject = True
     le = LearningEngine(cfg.learning, tmp_db)
     for _ in range(20):
-        pos = _closed_pos(pnl=-0.4, regime="breakout")
+        pos = _closed_pos(pnl=-0.4, regime="breakout", symbol="ETH/USDT")
         pos.id = tmp_db.insert_trade(pos)
         le.on_trade_closed(pos)
     sig = Signal(
@@ -986,36 +986,8 @@ def test_stop_loss_net_budget_includes_exit_fee(cfg, tmp_db):
     assert closed[0].pnl > -0.05
 
 
-def test_adaptive_time_stop_prefers_early_window():
-    from trading_system.execution.edge import should_adaptive_time_stop
-    from trading_system.types import Position, Side, Venue, TradeStatus
-
-    pos = Position(
-        symbol="BTC/USDT",
-        venue=Venue.CRYPTO,
-        side=Side.CALL,
-        strategy="bb_mean_reversion",
-        qty=2.5,
-        entry_price=100.0,
-        entry_mark=100.0,
-        entry_time=datetime.now(timezone.utc),
-        take_profit=100.20,
-        status=TradeStatus.OPEN,
-        leverage=1.0,
-        notional=2.5,
-    )
-    # Inside preferred window — never time-stop yet
-    assert should_adaptive_time_stop(pos, 99.9, 2.0, preferred_hold_minutes=3, max_hold_minutes=10) is False
-    # After preferred, adverse & not progressing → stop
-    assert should_adaptive_time_stop(pos, 99.5, 4.0, preferred_hold_minutes=3, max_hold_minutes=10) is True
-    # After preferred but progressing toward TP → extend
-    assert should_adaptive_time_stop(pos, 100.12, 5.0, preferred_hold_minutes=3, max_hold_minutes=10) is False
-    # Hard cap
-    assert should_adaptive_time_stop(pos, 100.12, 10.0, preferred_hold_minutes=3, max_hold_minutes=10) is True
-
-
-def test_winner_skips_time_stop(cfg, tmp_db):
-    """Profit trades must not close on time_stop even past max_hold."""
+def test_no_time_stop_even_past_max_hold(cfg, tmp_db):
+    """time_stop is disabled — winners and losers stay open past max_hold."""
     from datetime import timedelta
 
     from trading_system.execution import PaperExecutor
@@ -1030,34 +1002,39 @@ def test_winner_skips_time_stop(cfg, tmp_db):
     cfg.strategy.preferred_hold_minutes = 1
     cfg.strategy.min_hold_minutes = 0
     ex = PaperExecutor(cfg, tmp_db, port)
-    sig = Signal(
-        symbol="BTC/USDT",
-        venue=Venue.CRYPTO,
-        side=Side.CALL,
-        strategy="bb_mean_reversion",
-        confidence=70,
-        reason="test",
-        take_profit=None,
-        stop_loss=60000,
-        timestamp=datetime.now(timezone.utc),
-        regime=MarketRegime.RANGING,
-        features={"sl_budget_cash": 0.40, "sl_mode": "margin_pct"},
-    )
-    pos = ex.open_trade(sig, 10.0, 65000)
-    past = datetime.now(timezone.utc) - timedelta(minutes=15)
-    with tmp_db.connection() as conn:
-        conn.execute(
-            "UPDATE trades SET entry_time=? WHERE id=?",
-            (past.isoformat(), pos.id),
+
+    def _open(symbol: str, px: float) -> None:
+        sig = Signal(
+            symbol=symbol,
+            venue=Venue.CRYPTO,
+            side=Side.CALL,
+            strategy="bb_mean_reversion",
+            confidence=70,
+            reason="test",
+            take_profit=None,
+            stop_loss=px * 0.5,
+            timestamp=datetime.now(timezone.utc),
+            regime=MarketRegime.RANGING,
+            features={"sl_budget_cash": 50.0, "sl_mode": "margin_pct"},
         )
+        pos = ex.open_trade(sig, 10.0, px)
+        past = datetime.now(timezone.utc) - timedelta(minutes=15)
+        with tmp_db.connection() as conn:
+            conn.execute(
+                "UPDATE trades SET entry_time=? WHERE id=?",
+                (past.isoformat(), pos.id),
+            )
+
+    _open("BTC/USDT", 65000.0)
+    _open("ETH/USDT", 2000.0)
     closed = ex.manage_open(
-        {"BTC/USDT": 65260.0},
+        {"BTC/USDT": 65260.0, "ETH/USDT": 1990.0},
         forex_session_open=True,
         close_fx_at_session_end=False,
-        feature_rows={"BTC/USDT": {}},
+        feature_rows={"BTC/USDT": {}, "ETH/USDT": {}},
     )
     assert closed == []
-    assert len(port.open_positions()) == 1
+    assert len(port.open_positions()) == 2
 
 
 def test_learning_display_labels():
@@ -1080,13 +1057,14 @@ def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):
     from trading_system.learning.sessions import session_bucket
 
     cfg.learning.loss_soft_reject = True
-    cfg.learning.soft_reject_exclude_key_prefixes = ["strategy="]
+    cfg.learning.soft_reject_exclude_key_prefixes = ["strategy=", "regime="]
     cfg.learning.session_aware = True
     le = LearningEngine(cfg.learning, tmp_db)
     sess = session_bucket(datetime.now(timezone.utc), cfg.learning.session_buckets)
     now = datetime.now(timezone.utc).isoformat()
     strat_key = f"session={sess}|strategy=bb_mean_reversion"
     regime_key = f"session={sess}|regime=breakout"
+    symbol_key = f"session={sess}|symbol=ETH/USDT"
     for _ in range(20):
         tmp_db.increment_pattern(strat_key, "loss", now)
     tmp_db.confirm_pattern(
@@ -1100,6 +1078,15 @@ def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):
         tmp_db.increment_pattern(regime_key, "loss", now)
     tmp_db.confirm_pattern(
         regime_key,
+        "loss",
+        confirmed_count=20,
+        decision_reason="test",
+        effect_action="soft_reject",
+    )
+    for _ in range(20):
+        tmp_db.increment_pattern(symbol_key, "loss", now)
+    tmp_db.confirm_pattern(
+        symbol_key,
         "loss",
         confirmed_count=20,
         decision_reason="test",
@@ -1120,8 +1107,8 @@ def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):
     assert reject is None  # strategy= excluded even with session prefix
     assert adjusted.confidence < 70  # penalty may still apply
 
-    sig_bad = Signal(
-        symbol="ETH/USDT",
+    sig_regime = Signal(
+        symbol="BTC/USDT",
         venue=Venue.CRYPTO,
         side=Side.PUT,
         strategy="bb_mean_reversion",
@@ -1130,9 +1117,22 @@ def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):
         timestamp=datetime.now(timezone.utc),
         regime=MarketRegime.BREAKOUT,
     )
+    _, reject_regime = le.apply_confidence_effects(sig_regime)
+    assert reject_regime is None  # regime= too broad to hard-reject
+
+    sig_bad = Signal(
+        symbol="ETH/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.PUT,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        timestamp=datetime.now(timezone.utc),
+        regime=MarketRegime.RANGING,
+    )
     _, reject2 = le.apply_confidence_effects(sig_bad)
     assert reject2 is not None
-    assert "regime=breakout" in reject2
+    assert "symbol=ETH/USDT" in reject2
 
 
 def test_session_bucket_mapping():
@@ -1183,3 +1183,77 @@ def test_session_patterns_do_not_cross_bleed(cfg, tmp_db):
     )
     _, reject = le.apply_confidence_effects(sig)
     assert reject is None
+
+
+def test_objective_config_and_daily_progress(cfg):
+    from trading_system.learning import daily_objective_progress
+
+    assert cfg.objective.daily_equity_gain_pct == 50.0
+    assert cfg.objective.chase_target_in_discovery is False
+    assert "regime=" in cfg.learning.soft_reject_exclude_key_prefixes
+    prog = daily_objective_progress(
+        start_equity=100.0,
+        current_equity=110.0,
+        target_pct=50.0,
+        phase="discovery",
+        chase_in_discovery=False,
+    )
+    assert prog["day_gain_pct"] == pytest.approx(10.0)
+    assert prog["progress_vs_target"] == pytest.approx(0.2)
+    assert prog["chase_now"] is False
+    assert "aprender" in prog["blurb"]
+
+
+def test_reset_loss_learning_keeps_wins(tmp_path):
+    import importlib.util
+
+    from trading_system.config import ROOT
+
+    db = Database(tmp_path / "wipe.db")
+    now = datetime.now(timezone.utc)
+    win = _closed_pos(pnl=0.4, regime="ranging", exit_reason="trend_exit")
+    win.gross_pnl = 0.5
+    ts_loss = _closed_pos(pnl=-0.2, regime="low_vol", exit_reason="time_stop")
+    sl_loss = _closed_pos(pnl=-0.3, regime="low_vol", exit_reason="stop_loss")
+    sl_loss.symbol = "ETH/USDT"
+    for p in (win, ts_loss, sl_loss):
+        p.exit_time = now
+        db.insert_trade(p)
+    db.increment_pattern("session=europe|regime=ranging", "win", now.isoformat())
+    db.confirm_pattern(
+        "session=europe|regime=ranging",
+        "win",
+        confirmed_count=20,
+        decision_reason="keep",
+        effect_action="confidence_boost",
+    )
+    db.increment_pattern("session=europe|exit_reason=time_stop", "win", now.isoformat())
+    db.increment_pattern("session=europe|regime=low_vol", "loss", now.isoformat())
+    db.insert_applied_change(
+        "session=europe|regime=low_vol",
+        "loss",
+        "soft_reject",
+        "test",
+        occurrences=20,
+        threshold=20,
+    )
+
+    spec = importlib.util.spec_from_file_location(
+        "reset_loss_learning", ROOT / "scripts" / "reset_loss_learning.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    out = mod.reset_loss_learning(tmp_path / "wipe.db", dry_run=False)
+    assert out["time_stop_trades"] == 1
+
+    remaining = db.get_all_closed()
+    reasons = {t.exit_reason for t in remaining}
+    assert "time_stop" not in reasons
+    assert "trend_exit" in reasons
+    assert "stop_loss" in reasons
+    wins = db.get_patterns(direction="win")
+    assert any(p["pattern_key"] == "session=europe|regime=ranging" for p in wins)
+    assert not any("time_stop" in p["pattern_key"] for p in wins)
+    assert db.get_patterns(direction="loss") == []
+

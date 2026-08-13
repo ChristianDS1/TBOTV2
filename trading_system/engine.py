@@ -14,7 +14,7 @@ from trading_system.database import Database
 from trading_system.execution import PaperExecutor
 from trading_system.execution.edge import assess_entry_edge
 from trading_system.features import build_features, latest_feature_dict
-from trading_system.learning import LearningEngine
+from trading_system.learning import LearningEngine, daily_objective_progress
 from trading_system.models import WinProbabilityModel
 from trading_system.portfolio import Portfolio
 from trading_system.reports import maybe_rollover_daily_report, write_daily_report
@@ -626,6 +626,20 @@ class TradingEngine:
         sess = session_info(buckets=self.cfg.learning.session_buckets)
         learning_payload = self.learning.phase_progress(snap.total_trades if snap else 0)
         learning_payload["session"] = sess
+        obj_cfg = self.cfg.objective
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        start_eq = self.db.first_equity_on_day(day)
+        if start_eq is None:
+            start_eq = float(self.cfg.capital.initial)
+        objective = daily_objective_progress(
+            start_equity=start_eq,
+            current_equity=float(snap.equity) if snap else start_eq,
+            target_pct=obj_cfg.daily_equity_gain_pct,
+            phase=learning_payload.get("suggested_phase") or obj_cfg.name,
+            chase_in_discovery=obj_cfg.chase_target_in_discovery,
+            name=obj_cfg.name,
+        )
+        learning_payload["objective"] = objective
         return {
             "snapshot": snap.model_dump(mode="json"),
             "open_trades": open_pos,
@@ -642,6 +656,7 @@ class TradingEngine:
             "cycle": self._cycle,
             "mode": self.cfg.mode,
             "learning": learning_payload,
+            "objective": objective,
             "session": sess,
             "capital_resets": self.portfolio.capital_resets(),
             "daily_report": latest_report,

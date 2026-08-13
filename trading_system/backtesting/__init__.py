@@ -108,7 +108,6 @@ class Backtester:
         equity_curve = [cash]
         trades: list[dict[str, Any]] = []
         open_trade: dict[str, Any] | None = None
-        max_hold = scfg.max_hold_minutes
 
         for i in range(max(scfg.bb_period + 5, 40), len(feat)):
             window = feat.iloc[: i + 1].copy()
@@ -117,15 +116,12 @@ class Backtester:
             ts = row["timestamp"]
 
             if open_trade:
-                bars_held = i - open_trade["entry_i"]
                 exit_reason = None
                 sl = open_trade.get("sl")
                 if open_trade["side"] == "call" and sl is not None and price <= sl:
                     exit_reason = "stop_loss"
                 elif open_trade["side"] == "put" and sl is not None and price >= sl:
                     exit_reason = "stop_loss"
-                elif bars_held >= max_hold:
-                    exit_reason = "time_stop"
                 elif open_trade["side"] == "call" and price >= open_trade["tp"]:
                     exit_reason = "take_profit"
                 elif open_trade["side"] == "put" and price <= open_trade["tp"]:

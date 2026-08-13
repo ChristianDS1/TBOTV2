@@ -361,6 +361,20 @@ class Database:
                 (datetime.now(timezone.utc).isoformat(), equity, cash, open_positions),
             )
 
+    def first_equity_on_day(self, day: str) -> float | None:
+        """First equity_curve snapshot for a UTC day (YYYY-MM-DD)."""
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT equity FROM equity_curve
+                WHERE substr(timestamp, 1, 10) = ?
+                ORDER BY timestamp ASC
+                LIMIT 1
+                """,
+                (day,),
+            ).fetchone()
+        return float(row["equity"]) if row else None
+
     def set_state(self, key: str, value: str) -> None:
         with self.connection() as conn:
             conn.execute(

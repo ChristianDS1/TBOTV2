@@ -78,6 +78,11 @@
       flex-wrap: wrap;
       gap: 0.35rem;
     }
+    .objective-blurb {
+      padding: 0.35rem 1.5rem 0.15rem;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
     .session-banner .sess-pill {
       border: 1px solid var(--line);
       padding: 0.15rem 0.45rem;
@@ -236,6 +241,7 @@
     <div class="sess-meta" id="sessMeta">—</div>
     <div class="sess-pills" id="sessPills"></div>
   </div>
+  <div class="objective-blurb" id="objBlurb">ahora: aprender señales; después: aplicar ganadoras hacia +50%/día</div>
   <div class="grid" id="metrics"></div>
   <div class="charts-open" id="openCharts"></div>
   <main>
@@ -460,10 +466,18 @@
           `<span class="sess-pill ${b.name === sess.name ? "active" : ""}">${b.name} ${b.hours}</span>`
         ).join("");
         document.getElementById("sessPills").innerHTML = pills || "";
+        const obj = data.objective || (data.learning || {}).objective || {};
+        const objEl = document.getElementById("objBlurb");
+        if (objEl) objEl.textContent = obj.blurb || "ahora: aprender señales; después: aplicar ganadoras hacia +50%/día";
+        const gainCls = (obj.day_gain_pct || 0) >= 0 ? "pos" : "neg";
+        const gainLabel = obj.day_gain_pct == null
+          ? "—"
+          : `${fmt(obj.day_gain_pct, 1)}% / +${fmt(obj.daily_target_pct || 50, 0)}%`;
 
         document.getElementById("metrics").innerHTML = [
           metric("Equity", fmt(s.equity, 2) + " €"),
           metric("Cash", fmt(s.cash, 2) + " €"),
+          metric("Hoy vs objetivo", gainLabel, gainCls),
           metric("Realized P&L", fmt(s.realized_pnl, 2), pnlCls),
           metric("Open", s.open_positions ?? 0),
           metric("Win Rate", pct(s.win_rate || 0)),
