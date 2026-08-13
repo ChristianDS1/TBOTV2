@@ -32,18 +32,22 @@ class PaperExecutor:
     def _leverage(self) -> float:
         return max(1.0, float(self.cfg.execution.leverage or 1.0))
 
-    def _cost_on_notional(self, notional: float) -> float:
-        bps = self.cfg.execution.fee_bps + self.cfg.execution.slippage_bps
-        return notional * bps / 10_000
+    def _costs(self, venue: Any) -> tuple[float, float]:
+        return self.cfg.execution.costs_for_venue(venue)
+
+    def _cost_on_notional(self, notional: float, venue: Any) -> float:
+        fee_bps, slip_bps = self._costs(venue)
+        return notional * (fee_bps + slip_bps) / 10_000
 
     def open_trade(self, signal: Signal, size: float, price: float) -> Position:
         # size = margin; notional = margin * leverage (perp-style paper)
         leverage = self._leverage()
         margin = float(size)
         notional = margin * leverage
-        slip = self.cfg.execution.slippage_bps / 10_000
+        fee_bps, slip_bps = self._costs(signal.venue)
+        slip = slip_bps / 10_000
         fill = price * (1 + slip) if signal.side.value == "call" else price * (1 - slip)
-        fees = self._cost_on_notional(notional)
+        fees = self._cost_on_notional(notional, signal.venue)
         # Lock margin + pay entry fee from cash
         self.portfolio.debit(margin + fees)
 
@@ -84,7 +88,8 @@ class PaperExecutor:
     def close_trade(
         self, pos: Position, price: float, reason: str
     ) -> Position:
-        slip = self.cfg.execution.slippage_bps / 10_000
+        _, slip_bps = self._costs(pos.venue)
+        slip = slip_bps / 10_000
         fill = price * (1 - slip) if pos.side.value == "call" else price * (1 + slip)
         direction = 1 if pos.side.value == "call" else -1
         notional = position_notional(pos)
@@ -96,7 +101,7 @@ class PaperExecutor:
 
         # Net cash: leveraged move on fill minus exit fee (entry fee already debited)
         raw_fill_pnl = direction * (fill - pos.entry_price) / pos.entry_price * notional
-        exit_fees = self._cost_on_notional(notional)
+        exit_fees = self._cost_on_notional(notional, pos.venue)
         net = raw_fill_pnl - exit_fees
 
         # Cost erosion: strategy achieved target / gross positive but net red
@@ -160,6 +165,7 @@ class PaperExecutor:
                 feat = json.loads(pos.features_json or "{}")
             except Exception:
                 feat = {}
+            fee_bps, slip_bps = self._costs(pos.venue)
 
             # Stop-loss: price hit OR estimated NET hits cash/bps budget
             if pos.stop_loss is not None or feat.get("sl_budget_cash") is not None or feat.get("sl_budget_bps") is not None:
@@ -172,8 +178,8 @@ class PaperExecutor:
                 net_est = estimate_close_net(
                     pos,
                     px,
-                    self.cfg.execution.fee_bps,
-                    self.cfg.execution.slippage_bps,
+                    fee_bps,
+                    slip_bps,
                 )
                 budget_cash = feat.get("sl_budget_cash")
                 if budget_cash is None:
@@ -206,8 +212,8 @@ class PaperExecutor:
                     ok_net = can_take_profit_net_positive(
                         pos,
                         px,
-                        self.cfg.execution.fee_bps,
-                        self.cfg.execution.slippage_bps,
+                        fee_bps,
+                        slip_bps,
                     )
                     if (not require_pos_net) or ok_net:
                         # stash reasons into features for debugging (best-effort)
@@ -223,8 +229,8 @@ class PaperExecutor:
             net_for_ts = estimate_close_net(
                 pos,
                 px,
-                self.cfg.execution.fee_bps,
-                self.cfg.execution.slippage_bps,
+                fee_bps,
+                slip_bps,
             )
             if net_for_ts <= 0 and should_adaptive_time_stop(
                 pos,
@@ -247,8 +253,8 @@ class PaperExecutor:
                     ok_net = can_take_profit_net_positive(
                         pos,
                         px,
-                        self.cfg.execution.fee_bps,
-                        self.cfg.execution.slippage_bps,
+                        fee_bps,
+                        slip_bps,
                     )
                     if (not require_pos_net) or ok_net:
                         closed.append(self.close_trade(pos, px, "take_profit"))

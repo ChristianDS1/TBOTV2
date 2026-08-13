@@ -90,7 +90,7 @@ class ForexAdapter(MarketAdapter):
         return df.tail(limit).reset_index(drop=True)
 
     def _synthetic(self, symbol: str, limit: int) -> pd.DataFrame:
-        bases = {"EUR/USD": 1.08, "GBP/USD": 1.27, "USD/JPY": 150.0}
+        bases = {"EUR/USD": 1.08, "GBP/USD": 1.27, "USD/JPY": 150.0, "AUD/USD": 0.66}
         base = bases.get(symbol, 1.0)
         rng = np.random.default_rng(abs(hash(symbol)) % 10_000)
         rets = rng.normal(0, 0.00015, size=limit)

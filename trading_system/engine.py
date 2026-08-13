@@ -215,8 +215,9 @@ class TradingEngine:
         price = float(df["close"].iloc[-1])
         margin = float(self.cfg.capital.base_trade_size)
         leverage = max(1.0, float(self.cfg.execution.leverage or 1.0))
+        fee_bps, slip_bps = self.cfg.execution.costs_for_venue(venue)
         exit_fee_bps = (
-            self.cfg.execution.fee_bps + self.cfg.execution.slippage_bps
+            fee_bps + slip_bps
             if getattr(self.cfg.strategy, "sl_include_exit_fees", True)
             else 0.0
         )
@@ -282,8 +283,8 @@ class TradingEngine:
         edge = assess_entry_edge(
             price=price,
             take_profit=edge_tp,
-            fee_bps=self.cfg.execution.fee_bps,
-            slippage_bps=self.cfg.execution.slippage_bps,
+            fee_bps=fee_bps,
+            slippage_bps=slip_bps,
             hard_multiple=self.cfg.execution.hard_min_edge_multiple,
             soft_multiple=self.cfg.execution.soft_min_edge_multiple,
         )

@@ -21,6 +21,8 @@ symbols:
   forex:
     - EUR/USD
     - GBP/USD
+    - USD/JPY
+    - AUD/USD
 
 timeframes:
   primary: 1m
@@ -29,9 +31,12 @@ timeframes:
 strategy:
   name: bb_mean_reversion
   min_conditions: 3
+  # Forex: slightly softer so more pairs can fire (majors move less than crypto)
+  forex_min_conditions: 2
   require_rejection_candle: true  # rejection_bull/bear hard gate (still counts toward 3/5)
   # Max retrace from extreme toward mid before entry is "too late" (fraction of band width)
   max_extreme_retrace_pct: 0.35
+  forex_max_extreme_retrace_pct: 0.45
   # TP: no fixed price — exit on trend/momentum fade (indicators + rejection against).
   # bb_mid still used only as fee-edge proxy at entry.
   tp_mode: trend_fade
@@ -97,6 +102,9 @@ forex_session:
 execution:
   fee_bps: 4.0
   slippage_bps: 2.0
+  # Paper FX closer to tight retail spot (crypto stays 4+2 on notional)
+  forex_fee_bps: 1.0
+  forex_slippage_bps: 1.0
   poll_interval_seconds: 5
   # Paper leverage (margin model): margin=base_trade_size, notional=margin*leverage.
   # Fees/slippage charged on NOTIONAL (same bps at any leverage — matches perps).

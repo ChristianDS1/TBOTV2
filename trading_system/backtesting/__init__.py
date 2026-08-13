@@ -92,7 +92,8 @@ class Backtester:
         trade_size: float = 10.0,
     ) -> BacktestResult:
         scfg = self.cfg.strategy
-        fee_bps = self.cfg.execution.fee_bps + self.cfg.execution.slippage_bps
+        fee_bps, slip_bps = self.cfg.execution.costs_for_venue(venue)
+        fee_one_way = fee_bps + slip_bps
         leverage = max(1.0, float(self.cfg.execution.leverage or 1.0))
         feat = build_features(
             df,
@@ -135,7 +136,7 @@ class Backtester:
                     notional = open_trade["notional"]
                     margin = open_trade["margin"]
                     raw = direction * (price - open_trade["entry"]) / open_trade["entry"] * notional
-                    exit_fee = notional * fee_bps / 10_000
+                    exit_fee = notional * fee_one_way / 10_000
                     net = raw - exit_fee
                     cash += margin + net
                     open_trade.update(
@@ -157,7 +158,7 @@ class Backtester:
                 if sig is not None:
                     margin = trade_size
                     notional = margin * leverage
-                    entry_fee = notional * fee_bps / 10_000
+                    entry_fee = notional * fee_one_way / 10_000
                     if cash >= margin + entry_fee:
                         cash -= margin + entry_fee
                         open_trade = {

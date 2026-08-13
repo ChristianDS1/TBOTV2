@@ -261,7 +261,12 @@ class BBMeanReversionStrategy(Strategy):
 
         call_n = sum(call_conds)
         put_n = sum(put_conds)
-        min_n = cfg.min_conditions
+        is_fx = (venue.value if hasattr(venue, "value") else str(venue)).lower() == "forex"
+        min_n = (
+            int(getattr(cfg, "forex_min_conditions", cfg.min_conditions) or cfg.min_conditions)
+            if is_fx
+            else cfg.min_conditions
+        )
 
         # Soft filters reduce confidence rather than hard-block in discovery
         soft_penalty = 0.0
@@ -314,6 +319,10 @@ class BBMeanReversionStrategy(Strategy):
 
         # Too far from extreme toward mid → late entry, skip
         max_retrace = float(cfg.max_extreme_retrace_pct)
+        if is_fx:
+            max_retrace = float(
+                getattr(cfg, "forex_max_extreme_retrace_pct", max_retrace) or max_retrace
+            )
         features["extreme_retrace_pct"] = None
         upper = float(row["bb_upper"])
         lower = float(row["bb_lower"])

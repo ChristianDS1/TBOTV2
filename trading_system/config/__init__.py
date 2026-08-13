@@ -34,8 +34,11 @@ class RiskConfig(BaseModel):
 class StrategyConfig(BaseModel):
     name: str = "bb_mean_reversion"
     min_conditions: int = 3
+    # Forex majors move less — slightly softer entry (rejection candle still required)
+    forex_min_conditions: int = 2
     require_rejection_candle: bool = True
     max_extreme_retrace_pct: float = 0.35
+    forex_max_extreme_retrace_pct: float = 0.45
     # trend_fade = no fixed TP (exit on momentum/trend fade); legacy: band_fraction | fixed_bps
     tp_mode: str = "trend_fade"
     tp_band_fraction: float = 0.25
@@ -111,6 +114,9 @@ class ForexSessionConfig(BaseModel):
 class ExecutionConfig(BaseModel):
     fee_bps: float = 4.0
     slippage_bps: float = 2.0
+    # Forex spot is cheaper than crypto perps — separate paper costs
+    forex_fee_bps: float = 1.0
+    forex_slippage_bps: float = 1.0
     poll_interval_seconds: int = 5
     leverage: float = 20.0
     liquidation_margin_fraction: float = 0.9
@@ -120,6 +126,13 @@ class ExecutionConfig(BaseModel):
     tp_require_positive_net: bool = True
     # Legacy alias kept for older configs/tests
     tp_require_non_negative_net: bool = True
+
+    def costs_for_venue(self, venue: str | Any) -> tuple[float, float]:
+        """Return (fee_bps, slippage_bps) for venue."""
+        v = venue.value if hasattr(venue, "value") else str(venue)
+        if v.lower() == "forex":
+            return float(self.forex_fee_bps), float(self.forex_slippage_bps)
+        return float(self.fee_bps), float(self.slippage_bps)
 
 
 class DashboardConfig(BaseModel):

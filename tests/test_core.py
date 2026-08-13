@@ -586,6 +586,15 @@ def test_entry_edge_hard_and_soft():
     assert ok.soft_penalty is False
 
 
+def test_forex_costs_cheaper_than_crypto(cfg):
+    crypto = cfg.execution.costs_for_venue("crypto")
+    forex = cfg.execution.costs_for_venue("forex")
+    assert crypto == (4.0, 2.0)
+    assert forex == (1.0, 1.0)
+    # round-trip: crypto 12 bps vs forex 4 bps
+    assert 2 * sum(forex) < 2 * sum(crypto)
+
+
 def test_tp_deferred_when_net_negative(cfg, tmp_db):
     from trading_system.execution import PaperExecutor
     from trading_system.portfolio import Portfolio
