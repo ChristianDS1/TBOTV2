@@ -302,6 +302,24 @@
     function applySeriesData(state, data) {
       const candles = data.candles || [];
       if (!candles.length) return;
+      const lineMarks = (data.markers || []).filter(m => m.line && m.price != null);
+      const entryMarks = (data.markers || []).filter(m => !m.line && m.price != null && String(m.text || "").startsWith("IN"));
+      // Keep entry + SL inside the visible price scale (FX SL is ~0.2% away; BB zoom hid it)
+      const extraPrices = [...lineMarks, ...entryMarks].map(m => Number(m.price)).filter(p => Number.isFinite(p));
+      state.candle.applyOptions({
+        autoscaleInfoProvider: (original) => {
+          const res = typeof original === "function" ? original() : null;
+          if (!res || !res.priceRange) return res;
+          let min = res.priceRange.minValue;
+          let max = res.priceRange.maxValue;
+          for (const p of extraPrices) {
+            min = Math.min(min, p);
+            max = Math.max(max, p);
+          }
+          const pad = Math.max((max - min) * 0.08, Math.abs(max) * 0.00005);
+          return { priceRange: { minValue: min - pad, maxValue: max + pad } };
+        },
+      });
       state.candle.setData(candles);
       const mid = (data.bb || []).map(b => ({ time: b.time, value: b.mid }));
       const upper = (data.bb || []).map(b => ({ time: b.time, value: b.upper }));
@@ -317,22 +335,31 @@
         text: m.text || "",
       }));
       state.candle.setMarkers(marks);
-      // SL price lines
       if (state._slLines) {
         state._slLines.forEach(l => { try { state.candle.removePriceLine(l); } catch(e) {} });
       }
       state._slLines = [];
-      (data.markers || []).filter(m => m.line && m.price != null).forEach(m => {
-        const line = state.candle.createPriceLine({
-          price: m.price,
-          color: "#8fa3b8",
+      for (const m of entryMarks) {
+        state._slLines.push(state.candle.createPriceLine({
+          price: Number(m.price),
+          color: (String(m.text || "").toLowerCase().includes("put") ? "#e85d5d" : "#3ecf8e"),
           lineWidth: 1,
           lineStyle: 2,
           axisLabelVisible: true,
-          title: m.text || "SL",
-        });
-        state._slLines.push(line);
-      });
+          title: "IN",
+        }));
+      }
+      for (const m of lineMarks) {
+        const px = Number(m.price);
+        state._slLines.push(state.candle.createPriceLine({
+          price: px,
+          color: "#ff5c5c",
+          lineWidth: 2,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: `SL ${px}`,
+        }));
+      }
       state.chart.timeScale().fitContent();
     }
 

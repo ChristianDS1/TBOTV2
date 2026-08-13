@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.14
+
+- Monitor charts: keep entry + stop-loss inside the visible price scale (FX SL was off-screen because candle zoom only covered BB width); draw SL as a clear red price line
+
 ## 0.1.13
 
 - `bulkowski_pattern` strategy: enter on confirmed chart patterns (1m or 15m/30m/1h) after HTF MACD agrees and backing indicators line up — BB stays, but entries are no longer BB-only
