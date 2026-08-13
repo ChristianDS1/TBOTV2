@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.13
+
+- `bulkowski_pattern` strategy: enter on confirmed chart patterns (1m or 15m/30m/1h) after HTF MACD agrees and backing indicators line up — BB stays, but entries are no longer BB-only
+- Extra detectors: triangles, rectangles, rising/falling wedges
+- Pattern/continuation edge uses measure-rule target (not BB mid), so breakouts are not starved by the fee gate
+- HTF charts are also scanned for patterns; opposing HTF patterns feed fade exits
+
 ## 0.1.12
 
 - Margin stays at `base_trade_size` (10) for crypto and FX; size only scales up after +€50 equity (no more size 9)

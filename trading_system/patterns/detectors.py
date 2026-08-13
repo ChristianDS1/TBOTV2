@@ -46,7 +46,36 @@ def scan_patterns(
     found += _v_reversals(pivots, close, df)
     found += _gaps(df)
     found += _flags_pennants(df, close)
+    found += _triangles(pivots, close)
+    found += _rectangles(pivots, close, tol_pct)
+    found += _wedges(pivots, close)
     return found
+
+
+WEAK_PATTERNS = {"gap_up", "gap_down", "v_top", "v_bottom"}
+
+
+def measure_target(pat: DetectedPattern, price: float) -> float:
+    """Measure-rule target from pattern height (fallback ~25 bps)."""
+    height = None
+    d = pat.details or {}
+    if d.get("p1") is not None and d.get("neck") is not None:
+        height = abs(float(d["p1"]) - float(d["neck"]))
+    elif pat.breakout_price is not None:
+        height = abs(price - float(pat.breakout_price))
+    if height is None or height <= 0:
+        height = abs(price) * 0.0025
+    if pat.direction == "bullish":
+        return price + height
+    return price - height
+
+
+def pattern_opposes_htf(pat: DetectedPattern, htf: str) -> bool:
+    if htf == "bull" and pat.direction == "bearish":
+        return True
+    if htf == "bear" and pat.direction == "bullish":
+        return True
+    return False
 
 
 def best_reversal(patterns: list[DetectedPattern], side: str) -> DetectedPattern | None:
@@ -210,4 +239,79 @@ def _flags_pennants(df: pd.DataFrame, close: float) -> list[DetectedPattern]:
         return [DetectedPattern("flag_bull", "bullish", 65.0, close)]
     if pole_move < 0 and close < float(cons["low"].min()):
         return [DetectedPattern("flag_bear", "bearish", 65.0, close)]
+    return []
+
+
+def _triangles(
+    pivots: list[tuple[int, float, str]], close: float
+) -> list[DetectedPattern]:
+    hs = [p for p in pivots if p[2] == "H"]
+    ls = [p for p in pivots if p[2] == "L"]
+    if len(hs) < 2 or len(ls) < 2:
+        return []
+    h1, h2 = hs[-2][1], hs[-1][1]
+    l1, l2 = ls[-2][1], ls[-1][1]
+    upper_falling = h2 < h1 * 0.9995
+    upper_flat = is_near(h1, h2, 0.35)
+    lower_rising = l2 > l1 * 1.0005
+    lower_flat = is_near(l1, l2, 0.35)
+    out: list[DetectedPattern] = []
+    if upper_falling and lower_rising:
+        if close > h2:
+            out.append(DetectedPattern("triangle_sym_up", "bullish", 66.0, h2))
+        elif close < l2:
+            out.append(DetectedPattern("triangle_sym_down", "bearish", 66.0, l2))
+    elif upper_flat and lower_rising:
+        cap = max(h1, h2)
+        if close > cap:
+            out.append(DetectedPattern("triangle_asc_up", "bullish", 68.0, cap))
+        elif close < l2:
+            out.append(DetectedPattern("triangle_asc_down", "bearish", 62.0, l2))
+    elif upper_falling and lower_flat:
+        floor = min(l1, l2)
+        if close < floor:
+            out.append(DetectedPattern("triangle_desc_down", "bearish", 68.0, floor))
+        elif close > h2:
+            out.append(DetectedPattern("triangle_desc_up", "bullish", 62.0, h2))
+    return out
+
+
+def _rectangles(
+    pivots: list[tuple[int, float, str]], close: float, tol_pct: float
+) -> list[DetectedPattern]:
+    hs = [p for p in pivots if p[2] == "H"][-3:]
+    ls = [p for p in pivots if p[2] == "L"][-3:]
+    if len(hs) < 2 or len(ls) < 2:
+        return []
+    if not all(is_near(hs[0][1], h[1], tol_pct * 1.2) for h in hs):
+        return []
+    if not all(is_near(ls[0][1], l[1], tol_pct * 1.2) for l in ls):
+        return []
+    cap = sum(h[1] for h in hs) / len(hs)
+    floor = sum(l[1] for l in ls) / len(ls)
+    if cap <= floor:
+        return []
+    if close > cap:
+        return [DetectedPattern("rectangle_up", "bullish", 64.0, cap, {"neck": cap, "p1": floor})]
+    if close < floor:
+        return [DetectedPattern("rectangle_down", "bearish", 64.0, floor, {"neck": floor, "p1": cap})]
+    return []
+
+
+def _wedges(
+    pivots: list[tuple[int, float, str]], close: float
+) -> list[DetectedPattern]:
+    hs = [p for p in pivots if p[2] == "H"][-3:]
+    ls = [p for p in pivots if p[2] == "L"][-3:]
+    if len(hs) < 3 or len(ls) < 3:
+        return []
+    out: list[DetectedPattern] = []
+    rising_h = hs[0][1] < hs[1][1] < hs[2][1]
+    rising_l = ls[0][1] < ls[1][1] < ls[2][1]
+    falling_h = hs[0][1] > hs[1][1] > hs[2][1]
+    falling_l = ls[0][1] > ls[1][1] > ls[2][1]
+    if rising_h and rising_l and close < ls[-1][1]:
+        out.append(DetectedPattern("rising_wedge", "bearish", 67.0, ls[-1][1]))
+    if falling_h and falling_l and close > hs[-1][1]:
+        out.append(DetectedPattern("falling_wedge", "bullish", 67.0, hs[-1][1]))
     return []

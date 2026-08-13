@@ -1442,3 +1442,45 @@ def test_signal_keys_include_htf_and_chart(cfg):
     assert any(k.endswith("htf=bear") or k == "htf=bear" for k in keys)
     assert any("chart=double_top" in k for k in keys)
 
+
+def test_bulkowski_pattern_enters_when_htf_agrees(cfg):
+    from trading_system.patterns import DetectedPattern
+    from trading_system.strategies import ChartPatternStrategy
+
+    df = SimulatedCryptoAdapter(seed=3).get_ohlcv("BTC/USDT", limit=150)
+    pat = DetectedPattern(
+        "double_bottom", "bullish", 72.0, 100.0, {"p1": 99.0, "neck": 101.0}
+    )
+    strat = ChartPatternStrategy()
+    sig = strat.evaluate(
+        "BTC/USDT",
+        Venue.CRYPTO,
+        df,
+        cfg.strategy,
+        context={
+            "htf_bias": "bull",
+            "patterns": [pat],
+            "htf_patterns": [],
+            "ltf_turn": "turn_up",
+        },
+    )
+    assert sig is not None
+    assert sig.strategy == "bulkowski_pattern"
+    assert sig.side == Side.CALL
+    assert sig.features.get("measure_target") is not None
+    assert sig.take_profit is None
+
+    blocked = strat.evaluate(
+        "BTC/USDT",
+        Venue.CRYPTO,
+        df,
+        cfg.strategy,
+        context={
+            "htf_bias": "bear",
+            "patterns": [pat],
+            "htf_patterns": [],
+            "ltf_turn": "turn_up",
+        },
+    )
+    assert blocked is None
+

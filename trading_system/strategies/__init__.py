@@ -10,6 +10,12 @@ import pandas as pd
 
 from trading_system.config import StrategyConfig
 from trading_system.features import build_features, detect_regime, latest_feature_dict
+from trading_system.patterns import (
+    DetectedPattern,
+    WEAK_PATTERNS,
+    measure_target,
+    pattern_opposes_htf,
+)
 from trading_system.types import MarketRegime, Side, Signal, Venue
 
 
@@ -524,11 +530,156 @@ class MomentumContinuationStrategy(Strategy):
         )
 
 
+def _indicator_backing(row: pd.Series, side: Side, ltf: str | None) -> list[str]:
+    tags: list[str] = []
+    slow = float(row.get("macd_slow_hist") or 0)
+    fast = row.get("macd_fast_hist")
+    prev = row.get("macd_fast_hist_prev")
+    rsi_v = float(row["rsi"]) if not pd.isna(row.get("rsi")) else 50.0
+    if side == Side.CALL:
+        if slow >= 0:
+            tags.append("macd_slow")
+        if bool(row.get("macd_fast_bull_cross")) or (
+            fast is not None and prev is not None and not pd.isna(fast) and not pd.isna(prev) and float(fast) > float(prev)
+        ):
+            tags.append("macd_fast")
+        if rsi_v < 70:
+            tags.append("rsi_ok")
+        if ltf == "turn_up":
+            tags.append("ltf")
+        if bool(row.get("rejection_bull")):
+            tags.append("rejection")
+    else:
+        if slow <= 0:
+            tags.append("macd_slow")
+        if bool(row.get("macd_fast_bear_cross")) or (
+            fast is not None and prev is not None and not pd.isna(fast) and not pd.isna(prev) and float(fast) < float(prev)
+        ):
+            tags.append("macd_fast")
+        if rsi_v > 30:
+            tags.append("rsi_ok")
+        if ltf == "turn_down":
+            tags.append("ltf")
+        if bool(row.get("rejection_bear")):
+            tags.append("rejection")
+    return tags
+
+
+class ChartPatternStrategy(Strategy):
+    """Bulkowski confirmed pattern + HTF direction + backing indicators. Independent of BB."""
+
+    name = "bulkowski_pattern"
+    expected_holding_minutes = 8
+
+    def evaluate(
+        self,
+        symbol: str,
+        venue: Venue,
+        df: pd.DataFrame,
+        cfg: StrategyConfig,
+        context: dict[str, Any] | None = None,
+    ) -> Signal | None:
+        ctx = context or {}
+        htf = str(ctx.get("htf_bias") or "unknown")
+        ltf = ctx.get("ltf_turn")
+        one_m = list(ctx.get("patterns") or [])
+        htf_pats = list(ctx.get("htf_patterns") or [])
+
+        scored: list[tuple[float, Any, str]] = []
+        for p in one_m:
+            if pattern_opposes_htf(p, htf):
+                continue
+            scored.append((p.confidence + 8.0, p, "1m"))
+        for p in htf_pats:
+            if pattern_opposes_htf(p, htf):
+                continue
+            scored.append((p.confidence, p, str((p.details or {}).get("tf") or "htf")))
+        if not scored:
+            return None
+        scored.sort(key=lambda x: x[0], reverse=True)
+        _, pat, src = scored[0]
+        side = Side.CALL if pat.direction == "bullish" else Side.PUT
+        if htf == "bull" and side == Side.PUT:
+            return None
+        if htf == "bear" and side == Side.CALL:
+            return None
+        if ltf == "turn_down" and side == Side.CALL:
+            return None
+        if ltf == "turn_up" and side == Side.PUT:
+            return None
+        if len(df) < max(cfg.bb_period, 30) + 5:
+            return None
+        feat = build_features(
+            df,
+            bb_period=cfg.bb_period,
+            bb_std=cfg.bb_std,
+            rsi_period=cfg.rsi_period,
+            macd_fast=cfg.macd_fast,
+            macd_slow=cfg.macd_slow,
+        )
+        row = feat.iloc[-1]
+        if pd.isna(row.get("rsi")):
+            return None
+        backing = _indicator_backing(row, side, ltf)
+        min_n = 1 if htf in ("bull", "bear") else 2
+        if pat.name in WEAK_PATTERNS:
+            min_n += 1
+        if src != "1m":
+            min_n = max(min_n, 2)
+        if len(backing) < min_n:
+            return None
+        regime = detect_regime(feat)
+        features = latest_feature_dict(feat)
+        price = float(row["close"])
+        target = measure_target(pat, price)
+        features["htf_bias"] = htf
+        features["ltf_turn"] = ltf
+        features["chart_pattern"] = pat.name
+        features["chart_direction"] = pat.direction
+        features["chart_tf"] = src
+        features["setup"] = "bulkowski"
+        features["measure_target"] = target
+        features["backing"] = ",".join(backing)
+        sl, sl_budget_bps, sl_trigger_bps = compute_tight_stop_loss(
+            side=side,
+            price=price,
+            bb_lower=float(row["bb_lower"]),
+            bb_upper=float(row["bb_upper"]),
+            cfg=cfg,
+            exit_fee_bps=0.0,
+            take_profit=None,
+            margin=10.0,
+            leverage=20.0,
+        )
+        features["stop_loss"] = sl
+        features["sl_budget_bps"] = sl_budget_bps
+        features["sl_trigger_bps"] = sl_trigger_bps
+        conf = min(100.0, float(pat.confidence) + 4.0 * len(backing))
+        if htf in ("bull", "bear"):
+            conf = min(100.0, conf + 8.0)
+        return Signal(
+            symbol=symbol,
+            venue=venue,
+            side=side,
+            strategy=self.name,
+            confidence=conf,
+            reason=f"{pat.name}@{src};" + ",".join(backing),
+            features=features,
+            regime=regime if isinstance(regime, MarketRegime) else MarketRegime.UNKNOWN,
+            expected_holding_minutes=cfg.max_hold_minutes,
+            take_profit=None,
+            stop_loss=sl,
+            timestamp=datetime.now(timezone.utc),
+            conditions_met=len(backing),
+        )
+
+
 class StrategyRegistry:
     def __init__(self) -> None:
         self._strategies: dict[str, Strategy] = {}
         self.register(BBMeanReversionStrategy())
         self.register(MomentumContinuationStrategy())
+        self.register(ChartPatternStrategy())
 
     def register(self, strategy: Strategy) -> None:
         self._strategies[strategy.name] = strategy

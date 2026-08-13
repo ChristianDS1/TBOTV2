@@ -223,13 +223,19 @@ class TradingEngine:
 
     def _context_row(self, ctx: dict[str, Any]) -> dict[str, Any]:
         pats = ctx.get("patterns") or []
+        htf_pats = ctx.get("htf_patterns") or []
         top = max(pats, key=lambda p: p.confidence) if pats else None
+        htf_top = max(htf_pats, key=lambda p: p.confidence) if htf_pats else None
         return {
             "htf_bias": ctx.get("htf_bias") or "unknown",
             "ltf_turn": ctx.get("ltf_turn"),
-            "chart_reversal_bear": any(getattr(p, "direction", "") == "bearish" for p in pats),
-            "chart_reversal_bull": any(getattr(p, "direction", "") == "bullish" for p in pats),
-            "chart_pattern": getattr(top, "name", None) if top else None,
+            "chart_reversal_bear": any(getattr(p, "direction", "") == "bearish" for p in pats)
+            or any(getattr(p, "direction", "") == "bearish" for p in htf_pats),
+            "chart_reversal_bull": any(getattr(p, "direction", "") == "bullish" for p in pats)
+            or any(getattr(p, "direction", "") == "bullish" for p in htf_pats),
+            "chart_pattern": getattr(top, "name", None) if top else (
+                getattr(htf_top, "name", None) if htf_top else None
+            ),
         }
 
     def _fetch_tf(self, symbol: str, venue: Venue, tf: str, limit: int):
@@ -257,9 +263,14 @@ class TradingEngine:
 
     def _market_context(self, symbol: str, venue: Venue, df_1m) -> dict[str, Any]:
         votes: dict[str, str] = {}
+        htf_patterns: list = []
         for tf in self.cfg.timeframes.confirm or []:
             d = self._fetch_tf(symbol, venue, tf, 80)
             votes[tf] = macd_htf_bias(d)
+            if d is not None and len(d) >= 30:
+                for p in scan_patterns(d):
+                    p.details["tf"] = tf
+                    htf_patterns.append(p)
         bias = combine_htf_votes(votes)
         patterns = scan_patterns(df_1m)
         ltf = None
@@ -274,6 +285,7 @@ class TradingEngine:
             "htf_bias": bias,
             "htf_votes": votes,
             "patterns": patterns,
+            "htf_patterns": htf_patterns,
             "ltf_turn": ltf,
         }
 
@@ -358,12 +370,21 @@ class TradingEngine:
                 )
                 signal.features["sl_mode"] = sl_mode
 
-        # Soft fee-aware edge: use bb_mid distance as expected-move proxy when no fixed TP
+        # Soft fee-aware edge: BB uses mid; pattern/continuation use measure-rule (or skip gate)
         edge_tp = signal.take_profit
+        proxy = "take_profit"
         if edge_tp is None:
-            mid = signal.features.get("bb_mid")
-            if mid is not None:
-                edge_tp = float(mid)
+            mt = signal.features.get("measure_target") or signal.features.get("edge_target")
+            if mt is not None:
+                edge_tp = float(mt)
+                proxy = "measure_target"
+            elif signal.strategy == "bb_mean_reversion":
+                mid = signal.features.get("bb_mid")
+                if mid is not None:
+                    edge_tp = float(mid)
+                    proxy = "bb_mid"
+            else:
+                proxy = "no_tp"
         edge = assess_entry_edge(
             price=price,
             take_profit=edge_tp,
@@ -375,7 +396,7 @@ class TradingEngine:
         signal.features["edge_bps"] = edge.edge_bps
         signal.features["round_trip_cost_bps"] = edge.round_trip_cost_bps
         signal.features["edge_ratio"] = edge.ratio
-        signal.features["edge_proxy"] = "bb_mid" if signal.take_profit is None else "take_profit"
+        signal.features["edge_proxy"] = proxy
         if edge.hard_reject:
             self.db.insert_rejected(
                 RejectedSignal(
