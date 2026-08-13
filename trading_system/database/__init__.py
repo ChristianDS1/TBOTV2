@@ -235,7 +235,8 @@ class Database:
                 """
                 UPDATE trades SET
                     status=?, exit_price=?, exit_time=?, pnl=?, fees=?, exit_reason=?,
-                    gross_pnl=?, entry_mark=?, cost_erosion=?, leverage=?, notional=?
+                    gross_pnl=?, entry_mark=?, cost_erosion=?, leverage=?, notional=?,
+                    stop_loss=?, features_json=?
                 WHERE id=?
                 """,
                 (
@@ -250,6 +251,8 @@ class Database:
                     int(pos.cost_erosion),
                     pos.leverage,
                     pos.notional,
+                    pos.stop_loss,
+                    pos.features_json,
                     pos.id,
                 ),
             )
@@ -353,6 +356,28 @@ class Database:
                 "SELECT * FROM strategy_stats ORDER BY rank_score DESC"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def trade_inventory(self) -> dict[str, int]:
+        """Row counts vs max id — monitor must not use sqlite_sequence after deletes."""
+        with self.connection() as conn:
+            closed = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM trades WHERE status='closed'"
+                ).fetchone()[0]
+            )
+            open_n = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM trades WHERE status='open'"
+                ).fetchone()[0]
+            )
+            row = conn.execute("SELECT MAX(id) FROM trades").fetchone()
+            last_id = int(row[0] or 0)
+        return {
+            "closed": closed,
+            "open": open_n,
+            "rows": closed + open_n,
+            "last_id": last_id,
+        }
 
     def record_equity(self, equity: float, cash: float, open_positions: int) -> None:
         with self.connection() as conn:

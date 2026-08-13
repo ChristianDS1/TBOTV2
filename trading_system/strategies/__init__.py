@@ -24,6 +24,7 @@ class Strategy(ABC):
         venue: Venue,
         df: pd.DataFrame,
         cfg: StrategyConfig,
+        context: dict[str, Any] | None = None,
     ) -> Signal | None:
         ...
 
@@ -212,6 +213,7 @@ class BBMeanReversionStrategy(Strategy):
         venue: Venue,
         df: pd.DataFrame,
         cfg: StrategyConfig,
+        context: dict[str, Any] | None = None,
     ) -> Signal | None:
         if len(df) < max(cfg.bb_period, 30) + 5:
             return None
@@ -335,7 +337,29 @@ class BBMeanReversionStrategy(Strategy):
         if not _near_extreme(row, side, max_retrace):
             return None
 
+        ctx = context or {}
+        htf = str(ctx.get("htf_bias") or "unknown")
+        ltf = ctx.get("ltf_turn")
+        # Don't fade into a confirmed higher-timeframe trend (continuation strategy can take it)
+        if htf == "bull" and side == Side.PUT:
+            return None
+        if htf == "bear" and side == Side.CALL:
+            return None
+
         confidence = max(0.0, min(100.0, (met / 5.0) * 100.0 - soft_penalty))
+        features["htf_bias"] = htf
+        features["ltf_turn"] = ltf
+        pats = ctx.get("patterns") or []
+        if pats:
+            top = max(pats, key=lambda p: p.confidence)
+            features["chart_pattern"] = top.name
+            features["chart_direction"] = top.direction
+        if (htf == "bull" and side == Side.CALL) or (htf == "bear" and side == Side.PUT):
+            confidence = min(100.0, confidence + 8.0)
+            features["htf_align"] = True
+        if (side == Side.CALL and ltf == "turn_down") or (side == Side.PUT and ltf == "turn_up"):
+            confidence = max(0.0, confidence - 6.0)
+            features["ltf_against"] = True
         if cfg.discovery_phase is False and confidence < cfg.entry_confidence_floor:
             return None
 
@@ -396,10 +420,115 @@ class BBMeanReversionStrategy(Strategy):
         )
 
 
+class MomentumContinuationStrategy(Strategy):
+    """HTF trend + 1m pullback. Used when fading the HTF would be wrong."""
+
+    name = "momentum_continuation"
+    expected_holding_minutes = 8
+
+    def evaluate(
+        self,
+        symbol: str,
+        venue: Venue,
+        df: pd.DataFrame,
+        cfg: StrategyConfig,
+        context: dict[str, Any] | None = None,
+    ) -> Signal | None:
+        ctx = context or {}
+        htf = str(ctx.get("htf_bias") or "unknown")
+        if htf not in ("bull", "bear"):
+            return None
+        if len(df) < max(cfg.bb_period, 30) + 5:
+            return None
+        feat = build_features(
+            df,
+            bb_period=cfg.bb_period,
+            bb_std=cfg.bb_std,
+            rsi_period=cfg.rsi_period,
+            macd_fast=cfg.macd_fast,
+            macd_slow=cfg.macd_slow,
+        )
+        row = feat.iloc[-1]
+        if pd.isna(row.get("rsi")) or pd.isna(row.get("bb_mid")):
+            return None
+        close = float(row["close"])
+        mid = float(row["bb_mid"])
+        slow_hist = float(row.get("macd_slow_hist") or 0)
+        pats = ctx.get("patterns") or []
+        cont_pat = next(
+            (
+                p
+                for p in pats
+                if (htf == "bull" and p.direction == "bullish" and p.name.startswith("flag"))
+                or (htf == "bear" and p.direction == "bearish" and p.name.startswith("flag"))
+            ),
+            None,
+        )
+        if htf == "bull":
+            pullback = bool(row["touch_lower"]) or bool(row["rejection_bull"]) or close <= mid
+            macd_ok = slow_hist >= 0
+            side = Side.CALL
+        else:
+            pullback = bool(row["touch_upper"]) or bool(row["rejection_bear"]) or close >= mid
+            macd_ok = slow_hist <= 0
+            side = Side.PUT
+        if not pullback or not macd_ok:
+            return None
+        ltf = ctx.get("ltf_turn")
+        if side == Side.CALL and ltf == "turn_down":
+            return None
+        if side == Side.PUT and ltf == "turn_up":
+            return None
+        regime = detect_regime(feat)
+        features = latest_feature_dict(feat)
+        features["htf_bias"] = htf
+        features["ltf_turn"] = ltf
+        features["setup"] = "htf_continuation"
+        if cont_pat:
+            features["chart_pattern"] = cont_pat.name
+            features["chart_direction"] = cont_pat.direction
+        price = close
+        sl, sl_budget_bps, sl_trigger_bps = compute_tight_stop_loss(
+            side=side,
+            price=price,
+            bb_lower=float(row["bb_lower"]),
+            bb_upper=float(row["bb_upper"]),
+            cfg=cfg,
+            exit_fee_bps=0.0,
+            take_profit=None,
+            margin=10.0,
+            leverage=20.0,
+        )
+        features["stop_loss"] = sl
+        features["sl_budget_bps"] = sl_budget_bps
+        features["sl_trigger_bps"] = sl_trigger_bps
+        conf = 62.0
+        if cont_pat:
+            conf += 8.0
+        if bool(row["rejection_bull"] if side == Side.CALL else row["rejection_bear"]):
+            conf += 6.0
+        return Signal(
+            symbol=symbol,
+            venue=venue,
+            side=side,
+            strategy=self.name,
+            confidence=min(100.0, conf),
+            reason=f"htf_{htf}_continuation",
+            features=features,
+            regime=regime if isinstance(regime, MarketRegime) else MarketRegime.UNKNOWN,
+            expected_holding_minutes=cfg.max_hold_minutes,
+            take_profit=None,
+            stop_loss=sl,
+            timestamp=datetime.now(timezone.utc),
+            conditions_met=2,
+        )
+
+
 class StrategyRegistry:
     def __init__(self) -> None:
         self._strategies: dict[str, Strategy] = {}
         self.register(BBMeanReversionStrategy())
+        self.register(MomentumContinuationStrategy())
 
     def register(self, strategy: Strategy) -> None:
         self._strategies[strategy.name] = strategy

@@ -54,10 +54,10 @@ class RiskManager:
         base = self.cfg.capital.base_trade_size
         step = self.cfg.capital.size_step_per_50_equity
         initial = self.cfg.capital.initial
+        # Scale UP with equity only — never drop below base (avoids margin 9 when paper < €100)
         bumps = int(max(0, equity - initial) // 50)
-        drops = int(max(0, initial - equity) // 50)
-        size = base + bumps * step - drops * step
-        return max(1.0, round(size, 2))
+        size = base + bumps * step
+        return max(float(base), round(size, 2))
 
     def correlated_count(self, open_positions: list[Position], symbol: str) -> int:
         group = None

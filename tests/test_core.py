@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
+import json
 
 import pandas as pd
 import pytest
@@ -824,6 +825,47 @@ def test_sl_margin_pct_four_percent(cfg, tmp_db):
     assert closed[0].pnl > -0.55  # around 4% margin, not runaway
 
 
+def test_forex_open_without_sl_gets_margin_pct_stop(cfg, tmp_db):
+    """FX (and any venue) must get the same 4% margin SL even if the signal omitted it."""
+    from trading_system.execution import PaperExecutor
+    from trading_system.portfolio import Portfolio
+
+    port = Portfolio(tmp_db, 100)
+    cfg.execution.leverage = 20.0
+    cfg.execution.forex_fee_bps = 1.0
+    cfg.execution.forex_slippage_bps = 1.0
+    cfg.strategy.sl_margin_pct = 4.0
+    cfg.strategy.tp_mode = "trend_fade"
+    ex = PaperExecutor(cfg, tmp_db, port)
+    sig = Signal(
+        symbol="EUR/USD",
+        venue=Venue.FOREX,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        take_profit=None,
+        stop_loss=None,
+        timestamp=datetime.now(timezone.utc),
+        regime=MarketRegime.RANGING,
+        features={},
+    )
+    pos = ex.open_trade(sig, 10.0, 1.1500)
+    assert pos.stop_loss is not None
+    assert pos.stop_loss < pos.entry_price
+    feat = json.loads(pos.features_json)
+    assert feat["sl_budget_cash"] == pytest.approx(0.40)
+    # Adverse ~25 bps on 20x notional blows the 4% margin budget
+    closed = ex.manage_open(
+        {"EUR/USD": 1.1470},
+        forex_session_open=True,
+        close_fx_at_session_end=False,
+        feature_rows={},
+    )
+    assert len(closed) == 1
+    assert closed[0].exit_reason == "stop_loss"
+
+
 def test_trend_fade_exit_requires_score_and_net(cfg, tmp_db):
     from datetime import timedelta
 
@@ -865,6 +907,25 @@ def test_trend_fade_exit_requires_score_and_net(cfg, tmp_db):
         min_score=2,
     )
     assert not_faded is False
+
+    chart_fade, chart_reasons = detect_trend_fade(
+        Side.CALL,
+        {
+            "rejection_bear": True,
+            "chart_reversal_bear": True,
+            "macd_fast_bear_cross": False,
+            "macd_fast_hist": 0.2,
+            "macd_fast_hist_prev": 0.1,
+            "macd_fast_hist_prev2": 0.05,
+            "rsi": 60,
+            "rsi_prev": 55,
+            "macd_slow_hist": 0.05,
+            "macd_slow_hist_prev": 0.01,
+        },
+        min_score=2,
+    )
+    assert chart_fade is True
+    assert "chart_reversal" in chart_reasons
 
     port = Portfolio(tmp_db, 100)
     cfg.execution.leverage = 20.0
@@ -1256,4 +1317,128 @@ def test_reset_loss_learning_keeps_wins(tmp_path):
     assert any(p["pattern_key"] == "session=europe|regime=ranging" for p in wins)
     assert not any("time_stop" in p["pattern_key"] for p in wins)
     assert db.get_patterns(direction="loss") == []
+
+
+def test_trade_size_never_below_base(cfg):
+    risk = RiskManager(cfg)
+    assert risk.trade_size(100) == 10
+    assert risk.trade_size(91) == 10
+    assert risk.trade_size(50) == 10
+    assert risk.trade_size(150) == 11
+    assert risk.trade_size(200) == 12
+
+
+def test_trade_inventory_closed_count_vs_last_id(tmp_db):
+    a = _closed_pos(pnl=0.1, exit_reason="trend_exit")
+    b = _closed_pos(pnl=-0.1, exit_reason="stop_loss")
+    tmp_db.insert_trade(a)
+    tmp_db.insert_trade(b)
+    inv = tmp_db.trade_inventory()
+    assert inv["closed"] == 2
+    assert inv["last_id"] == 2
+    with tmp_db.connection() as conn:
+        conn.execute("DELETE FROM trades WHERE id = 1")
+    inv = tmp_db.trade_inventory()
+    assert inv["closed"] == 1
+    assert inv["last_id"] == 2
+    assert inv["rows"] == 1
+
+
+def test_double_top_detector():
+    import numpy as np
+
+    from trading_system.patterns import scan_patterns
+
+    n = 80
+    close = np.full(n, 105.0)
+    high = np.full(n, 106.0)
+    low = np.full(n, 104.0)
+    open_ = np.full(n, 105.0)
+    for i, h in ((22, 108.0), (23, 109.0), (24, 110.0), (25, 109.2), (26, 108.0)):
+        high[i] = h
+        close[i] = h - 0.4
+        open_[i] = h - 0.8
+        low[i] = h - 1.2
+    for i, l in ((32, 104.2), (33, 103.4), (34, 103.0), (35, 103.5), (36, 104.2)):
+        low[i] = l
+        close[i] = l + 0.3
+        open_[i] = l + 0.6
+        high[i] = l + 1.2
+    for i, h in ((47, 108.0), (48, 109.2), (49, 110.1), (50, 109.0), (51, 108.0)):
+        high[i] = h
+        close[i] = h - 0.4
+        open_[i] = h - 0.8
+        low[i] = h - 1.2
+    close[-1] = 102.0
+    high[-1] = 103.2
+    low[-1] = 101.4
+    open_[-1] = 103.0
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=n, freq="1min", tz="UTC"),
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": np.full(n, 10.0),
+        }
+    )
+    names = {p.name for p in scan_patterns(df)}
+    assert "double_top" in names
+
+
+def test_htf_votes_and_bb_blocks_fade_into_trend(cfg):
+    from trading_system.patterns import combine_htf_votes
+    from trading_system.strategies import MomentumContinuationStrategy
+
+    assert combine_htf_votes({"15m": "bull", "30m": "bull", "1h": "bull"}) == "bull"
+    assert combine_htf_votes({"15m": "bull", "30m": "bear", "1h": "bull"}) == "bull"
+    assert combine_htf_votes({"15m": "bull", "30m": "bear", "1h": "mixed"}) == "mixed"
+
+    adapter = SimulatedCryptoAdapter(seed=2)
+    df = adapter.get_ohlcv("BTC/USDT", limit=150)
+    cont = MomentumContinuationStrategy()
+    assert (
+        cont.evaluate(
+            "BTC/USDT", Venue.CRYPTO, df, cfg.strategy, context={"htf_bias": "unknown"}
+        )
+        is None
+    )
+
+    strat = BBMeanReversionStrategy()
+    for seed in range(40):
+        df = SimulatedCryptoAdapter(seed=seed).get_ohlcv("BTC/USDT", limit=150)
+        raw = strat.evaluate(
+            "BTC/USDT", Venue.CRYPTO, df, cfg.strategy, context={"htf_bias": "unknown"}
+        )
+        if raw is None:
+            continue
+        against = "bull" if raw.side == Side.PUT else "bear"
+        blocked = strat.evaluate(
+            "BTC/USDT",
+            Venue.CRYPTO,
+            df,
+            cfg.strategy,
+            context={"htf_bias": against},
+        )
+        assert blocked is None
+        return
+
+
+def test_signal_keys_include_htf_and_chart(cfg):
+    from trading_system.learning import signal_pattern_keys
+
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.PUT,
+        strategy="bb_mean_reversion",
+        confidence=70,
+        reason="test",
+        features={"htf_bias": "bear", "chart_pattern": "double_top"},
+        timestamp=datetime.now(timezone.utc),
+    )
+    keys = signal_pattern_keys(sig, cfg.learning)
+    assert any(k.endswith("htf=bear") or k == "htf=bear" for k in keys)
+    assert any("chart=double_top" in k for k in keys)
 

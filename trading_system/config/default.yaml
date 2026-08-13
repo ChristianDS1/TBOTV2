@@ -11,7 +11,7 @@ capital:
   initial: 100.0
   currency: EUR
   base_trade_size: 10.0
-  size_step_per_50_equity: 1.0
+  size_step_per_50_equity: 1.0  # only scales UP when equity ≥ +50; never below 10
 
 risk:
   max_simultaneous_positions: 5
@@ -34,6 +34,9 @@ symbols:
 timeframes:
   primary: 1m
   lookback_bars: 200
+  # HTF: confirm 1m direction (MACD 13,21,9). LTF: anticipate turn (crypto 1s→15s/30s if exchange allows)
+  confirm: [15m, 30m, 1h]
+  anticipate: [30s, 15s]
 
 strategy:
   name: bb_mean_reversion

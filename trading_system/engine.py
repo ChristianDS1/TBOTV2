@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,6 +17,13 @@ from trading_system.execution.edge import assess_entry_edge
 from trading_system.features import build_features, latest_feature_dict
 from trading_system.learning import LearningEngine, daily_objective_progress
 from trading_system.models import WinProbabilityModel
+from trading_system.patterns import (
+    combine_htf_votes,
+    ltf_turn,
+    macd_htf_bias,
+    resample_ohlcv,
+    scan_patterns,
+)
 from trading_system.portfolio import Portfolio
 from trading_system.reports import maybe_rollover_daily_report, write_daily_report
 from trading_system.risk import RiskManager
@@ -62,7 +70,8 @@ class TradingEngine:
         self._cycle = 0
         self.status_message = "initialized"
         self._last_daily_report_path: str | None = None
-        self._ohlcv_cache: dict[str, Any] = {}  # symbol -> DataFrame
+        self._ohlcv_cache: dict[str, Any] = {}  # symbol -> DataFrame (1m)
+        self._tf_cache: dict[tuple[str, str], tuple[float, Any]] = {}
 
         # Initialize daily report day marker
         if self.db.get_state("last_daily_report_day") is None:
@@ -134,9 +143,12 @@ class TradingEngine:
                     sym, self.cfg.timeframes.primary, self.cfg.timeframes.lookback_bars
                 )
                 mark_prices[sym] = float(df["close"].iloc[-1])
-                feature_rows[sym] = self._feature_row(df)
+                ctx = self._market_context(sym, Venue.CRYPTO, df)
+                row = self._feature_row(df)
+                row.update(self._context_row(ctx))
+                feature_rows[sym] = row
                 self._ohlcv_cache[sym] = df
-                self._process_symbol(sym, Venue.CRYPTO, df)
+                self._process_symbol(sym, Venue.CRYPTO, df, ctx)
             self.risk.mark_data("crypto", True)
             venue_health["crypto"] = self.crypto.health()
         except Exception as e:
@@ -152,10 +164,13 @@ class TradingEngine:
                     sym, self.cfg.timeframes.primary, self.cfg.timeframes.lookback_bars
                 )
                 mark_prices[sym] = float(df["close"].iloc[-1])
-                feature_rows[sym] = self._feature_row(df)
+                ctx = self._market_context(sym, Venue.FOREX, df)
+                row = self._feature_row(df)
+                row.update(self._context_row(ctx))
+                feature_rows[sym] = row
                 self._ohlcv_cache[sym] = df
                 if self.forex.is_tradable_now(sym):
-                    self._process_symbol(sym, Venue.FOREX, df)
+                    self._process_symbol(sym, Venue.FOREX, df, ctx)
             self.risk.mark_data("forex", True)
             venue_health["forex"] = self.forex.health()
         except Exception as e:
@@ -206,12 +221,81 @@ class TradingEngine:
         )
         return latest_feature_dict(feat)
 
-    def _process_symbol(self, symbol: str, venue: Venue, df) -> None:
-        strategy = self.strategies.get(self.cfg.strategy.name)
-        signal = strategy.evaluate(symbol, venue, df, self.cfg.strategy)
-        if signal is None:
-            return
+    def _context_row(self, ctx: dict[str, Any]) -> dict[str, Any]:
+        pats = ctx.get("patterns") or []
+        top = max(pats, key=lambda p: p.confidence) if pats else None
+        return {
+            "htf_bias": ctx.get("htf_bias") or "unknown",
+            "ltf_turn": ctx.get("ltf_turn"),
+            "chart_reversal_bear": any(getattr(p, "direction", "") == "bearish" for p in pats),
+            "chart_reversal_bull": any(getattr(p, "direction", "") == "bullish" for p in pats),
+            "chart_pattern": getattr(top, "name", None) if top else None,
+        }
 
+    def _fetch_tf(self, symbol: str, venue: Venue, tf: str, limit: int):
+        key = (symbol, tf)
+        now = time.monotonic()
+        ttl = 5.0 if tf in ("1m", "15s", "30s", "1s") else 45.0
+        hit = self._tf_cache.get(key)
+        if hit and now - hit[0] < ttl:
+            return hit[1]
+        df = None
+        try:
+            adapter = self.forex if venue == Venue.FOREX else self.crypto
+            if tf in ("15s", "30s"):
+                raw = adapter.get_ohlcv(symbol, "1s", max(int(limit) * 30, 180))
+                df = resample_ohlcv(raw, tf)
+            else:
+                df = adapter.get_ohlcv(symbol, tf, limit)
+            if df is not None and getattr(df, "empty", False):
+                df = None
+        except Exception as e:
+            logger.debug("ohlcv %s %s failed: %s", symbol, tf, e)
+            df = None
+        self._tf_cache[key] = (now, df)
+        return df
+
+    def _market_context(self, symbol: str, venue: Venue, df_1m) -> dict[str, Any]:
+        votes: dict[str, str] = {}
+        for tf in self.cfg.timeframes.confirm or []:
+            d = self._fetch_tf(symbol, venue, tf, 80)
+            votes[tf] = macd_htf_bias(d)
+        bias = combine_htf_votes(votes)
+        patterns = scan_patterns(df_1m)
+        ltf = None
+        if venue != Venue.FOREX:
+            for tf in self.cfg.timeframes.anticipate or []:
+                d = self._fetch_tf(symbol, venue, tf, 40)
+                if d is not None and len(d) >= 8:
+                    ltf = ltf_turn(d)
+                    if ltf:
+                        break
+        return {
+            "htf_bias": bias,
+            "htf_votes": votes,
+            "patterns": patterns,
+            "ltf_turn": ltf,
+        }
+
+    def _process_symbol(self, symbol: str, venue: Venue, df, context: dict[str, Any] | None = None) -> None:
+        ctx = context or {}
+        preferred = self.cfg.strategy.name
+        order = []
+        try:
+            order.append(self.strategies.get(preferred))
+        except KeyError:
+            pass
+        for strat in self.strategies.all():
+            if strat.name != preferred:
+                order.append(strat)
+        for strat in order:
+            signal = strat.evaluate(symbol, venue, df, self.cfg.strategy, context=ctx)
+            if signal is None:
+                continue
+            if self._try_enter(signal, symbol, venue, df):
+                return
+
+    def _try_enter(self, signal, symbol: str, venue: Venue, df) -> bool:
         price = float(df["close"].iloc[-1])
         margin = float(self.cfg.capital.base_trade_size)
         leverage = max(1.0, float(self.cfg.execution.leverage or 1.0))
@@ -306,7 +390,7 @@ class TradingEngine:
                     timestamp=datetime.now(timezone.utc),
                 )
             )
-            return
+            return False
         if edge.soft_penalty:
             signal.confidence = max(
                 0.0,
@@ -334,7 +418,7 @@ class TradingEngine:
                     timestamp=datetime.now(timezone.utc),
                 )
             )
-            return
+            return False
 
         signal = self.learning.tag_signal(signal)
 
@@ -358,7 +442,7 @@ class TradingEngine:
                     timestamp=datetime.now(timezone.utc),
                 )
             )
-            return
+            return False
 
         # Ensure cash can cover size (refill may have just run)
         if self.portfolio.cash < decision.size:
@@ -382,15 +466,17 @@ class TradingEngine:
                         timestamp=datetime.now(timezone.utc),
                     )
                 )
-                return
+                return False
 
         self.executor.open_trade(signal, decision.size, price)
+        return True
 
     def _build_snapshot(
         self, mark_prices: dict[str, float], venue_health: dict[str, Any]
     ) -> PortfolioSnapshot:
         m = self.portfolio.metrics()
-        progress = self.learning.phase_progress(m["total_trades"])
+        inv = self.db.trade_inventory()
+        progress = self.learning.phase_progress(inv["closed"])
         return PortfolioSnapshot(
             equity=self.portfolio.equity(mark_prices),
             cash=self.portfolio.cash,
@@ -401,7 +487,9 @@ class TradingEngine:
             expectancy=m["expectancy"],
             profit_factor=m["profit_factor"],
             drawdown=m["drawdown"],
-            total_trades=m["total_trades"],
+            total_trades=inv["closed"],
+            last_trade_id=inv["last_id"],
+            db_trade_rows=inv["rows"],
             exploration_ratio=self.learning.exploration_ratio,
             learning_phase=progress["suggested_phase"],
             kill_switch=self.risk.kill_switch,

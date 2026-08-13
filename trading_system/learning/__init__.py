@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from datetime import datetime, timezone
 from typing import Any
@@ -118,6 +119,30 @@ def trade_session(pos: Position, cfg: LearningConfig) -> str:
     return session_bucket(ts, cfg.session_buckets)
 
 
+def _context_pattern_keys(features: dict[str, Any] | None) -> list[str]:
+    if not features:
+        return []
+    extra: list[str] = []
+    htf = features.get("htf_bias")
+    if htf and str(htf) not in ("", "unknown", "None"):
+        extra.append(f"htf={htf}")
+    chart = features.get("chart_pattern")
+    if chart:
+        extra.append(f"chart={chart}")
+    return extra
+
+
+def _features_from_position(pos: Position) -> dict[str, Any]:
+    raw = getattr(pos, "features_json", None) or "{}"
+    if isinstance(raw, dict):
+        return raw
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def pattern_keys_from_trade(pos: Position, cfg: LearningConfig | None = None) -> list[str]:
     base = [
         f"regime={pos.regime}",
@@ -127,6 +152,7 @@ def pattern_keys_from_trade(pos: Position, cfg: LearningConfig | None = None) ->
         f"strategy={pos.strategy}",
         f"regime={pos.regime}|exit={pos.exit_reason or 'unknown'}",
     ]
+    base.extend(_context_pattern_keys(_features_from_position(pos)))
     if cfg is None or not cfg.session_aware:
         return base
     sess = trade_session(pos, cfg)
@@ -186,6 +212,7 @@ def signal_pattern_keys(signal: Signal, cfg: LearningConfig | None = None) -> li
         f"confidence_bucket={confidence_bucket(signal.confidence)}",
         f"strategy={signal.strategy}",
     ]
+    base.extend(_context_pattern_keys(getattr(signal, "features", None)))
     if cfg is None or not cfg.session_aware:
         return base
     ts = signal.timestamp or datetime.now(timezone.utc)

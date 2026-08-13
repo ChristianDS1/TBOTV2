@@ -22,6 +22,27 @@ YF_MAP = {
     "AUD/USD": "AUDUSD=X",
 }
 
+YF_INTERVAL = {
+    "1m": ("1m", "5d"),
+    "5m": ("5m", "5d"),
+    "15m": ("15m", "60d"),
+    "30m": ("30m", "60d"),
+    "1h": ("60m", "60d"),
+    "60m": ("60m", "60d"),
+}
+
+_SYN_FREQ = {
+    "1s": "1s",
+    "15s": "15s",
+    "30s": "30s",
+    "1m": "1min",
+    "5m": "5min",
+    "15m": "15min",
+    "30m": "30min",
+    "1h": "1h",
+    "60m": "1h",
+}
+
 
 class ForexAdapter(MarketAdapter):
     venue = Venue.FOREX
@@ -41,36 +62,47 @@ class ForexAdapter(MarketAdapter):
     def get_ohlcv(
         self, symbol: str, timeframe: str = "1m", limit: int = 200
     ) -> pd.DataFrame:
+        tf = timeframe or "1m"
+        cache_key = f"{symbol}:{tf}"
         try:
+            if tf in ("15s", "30s", "1s"):
+                raise ValueError(f"forex has no native {tf}")
             if self.provider == "yfinance":
-                df = self._fetch_yfinance(symbol, limit)
+                df = self._fetch_yfinance(symbol, tf, limit)
             else:
-                df = self._synthetic(symbol, limit)
+                df = self._synthetic(symbol, limit, tf)
             self._ok = True
             self._last_error = None
-            self._cache[symbol] = df
+            self._cache[cache_key] = df
+            if tf == "1m":
+                self._cache[symbol] = df
             self._last_fetch[symbol] = datetime.now(timezone.utc)
             return df
         except Exception as e:
             self._ok = False
             self._last_error = str(e)
+            if tf != "1m":
+                logger.debug("forex OHLCV %s %s failed: %s", symbol, tf, e)
+                return pd.DataFrame(
+                    columns=["timestamp", "open", "high", "low", "close", "volume"]
+                )
             logger.warning("forex OHLCV failed for %s: %s — using synthetic", symbol, e)
-            return self._synthetic(symbol, limit)
+            return self._synthetic(symbol, limit, "1m")
 
-    def _fetch_yfinance(self, symbol: str, limit: int) -> pd.DataFrame:
+    def _fetch_yfinance(self, symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
         import yfinance as yf
 
         ticker = YF_MAP.get(symbol, symbol.replace("/", "") + "=X")
-        # yfinance 1m limited to ~7 days; use 1m if possible else 5m
+        interval, period = YF_INTERVAL.get(timeframe, ("1m", "5d"))
         data = yf.download(
             ticker,
-            period="5d",
-            interval="1m",
+            period=period,
+            interval=interval,
             progress=False,
             auto_adjust=True,
         )
         if data is None or data.empty:
-            raise ValueError(f"No yfinance data for {ticker}")
+            raise ValueError(f"No yfinance data for {ticker} {interval}")
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         data = data.reset_index()
@@ -89,7 +121,7 @@ class ForexAdapter(MarketAdapter):
         )
         return df.tail(limit).reset_index(drop=True)
 
-    def _synthetic(self, symbol: str, limit: int) -> pd.DataFrame:
+    def _synthetic(self, symbol: str, limit: int, timeframe: str = "1m") -> pd.DataFrame:
         bases = {"EUR/USD": 1.08, "GBP/USD": 1.27, "USD/JPY": 150.0, "AUD/USD": 0.66}
         base = bases.get(symbol, 1.0)
         rng = np.random.default_rng(abs(hash(symbol)) % 10_000)
@@ -99,8 +131,9 @@ class ForexAdapter(MarketAdapter):
         opens[0] = closes[0]
         highs = np.maximum(opens, closes) * (1 + rng.uniform(0, 0.0003, limit))
         lows = np.minimum(opens, closes) * (1 - rng.uniform(0, 0.0003, limit))
+        freq = _SYN_FREQ.get(timeframe, "1min")
         now = pd.Timestamp.now(tz="UTC").floor("min")
-        ts = pd.date_range(end=now, periods=limit, freq="1min", tz="UTC")
+        ts = pd.date_range(end=now, periods=limit, freq=freq, tz="UTC")
         return pd.DataFrame(
             {
                 "timestamp": ts,

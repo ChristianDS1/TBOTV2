@@ -92,8 +92,19 @@ class SimulatedCryptoAdapter(MarketAdapter):
         highs = np.maximum(opens, closes) * (1 + rng.uniform(0, 0.001, limit))
         lows = np.minimum(opens, closes) * (1 - rng.uniform(0, 0.001, limit))
         vol = rng.uniform(10, 100, limit)
+        freq_map = {
+            "1s": "1s",
+            "15s": "15s",
+            "30s": "30s",
+            "1m": "1min",
+            "15m": "15min",
+            "30m": "30min",
+            "1h": "1h",
+            "60m": "1h",
+        }
+        freq = freq_map.get(timeframe, "1min")
         now = pd.Timestamp.now(tz="UTC").floor("min")
-        ts = pd.date_range(end=now, periods=limit, freq="1min", tz="UTC")
+        ts = pd.date_range(end=now, periods=limit, freq=freq, tz="UTC")
         self._prices[symbol] = float(closes[-1])
         return pd.DataFrame(
             {

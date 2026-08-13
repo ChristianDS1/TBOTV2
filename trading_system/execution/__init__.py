@@ -17,6 +17,7 @@ from trading_system.execution.edge import (
     unrealized_pnl_on_notional,
 )
 from trading_system.portfolio import Portfolio
+from trading_system.strategies import compute_sl_from_margin_pct
 from trading_system.types import Position, Signal, TradeStatus
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,40 @@ class PaperExecutor:
     def _cost_on_notional(self, notional: float, venue: Any) -> float:
         fee_bps, slip_bps = self._costs(venue)
         return notional * (fee_bps + slip_bps) / 10_000
+
+    def _ensure_margin_stop(self, pos: Position, *, ref_price: float) -> bool:
+        """Attach the same margin_pct SL used for crypto if missing. Returns True if patched."""
+        feat: dict[str, Any] = {}
+        try:
+            feat = json.loads(pos.features_json or "{}")
+        except Exception:
+            feat = {}
+        if pos.stop_loss is not None:
+            return False
+        fee_bps, slip_bps = self._costs(pos.venue)
+        exit_fee = (
+            fee_bps + slip_bps
+            if getattr(self.cfg.strategy, "sl_include_exit_fees", True)
+            else 0.0
+        )
+        sl, budget_bps, trigger_bps, budget_cash = compute_sl_from_margin_pct(
+            side=pos.side,
+            price=float(ref_price),
+            margin=float(pos.qty),
+            leverage=max(1.0, float(pos.leverage or self._leverage())),
+            sl_margin_pct=float(getattr(self.cfg.strategy, "sl_margin_pct", 4.0)),
+            exit_fee_bps=float(exit_fee),
+        )
+        pos.stop_loss = sl
+        feat["stop_loss"] = sl
+        feat["sl_budget_bps"] = budget_bps
+        feat["sl_trigger_bps"] = trigger_bps
+        feat["sl_budget_cash"] = budget_cash
+        feat["sl_exit_fee_bps"] = float(exit_fee)
+        feat["sl_mode"] = "margin_pct"
+        feat["sl_margin_pct"] = float(getattr(self.cfg.strategy, "sl_margin_pct", 4.0))
+        pos.features_json = json.dumps(feat)
+        return True
 
     def open_trade(self, signal: Signal, size: float, price: float) -> Position:
         # size = margin; notional = margin * leverage (perp-style paper)
@@ -70,6 +105,7 @@ class PaperExecutor:
             leverage=leverage,
             notional=notional,
         )
+        self._ensure_margin_stop(pos, ref_price=price)
         pos.id = self.db.insert_trade(pos)
         logger.info(
             "OPEN %s %s %s margin=%.2f notional=%.2f lev=%.1fx @ %.6f conf=%.1f",
@@ -164,6 +200,12 @@ class PaperExecutor:
                 feat = json.loads(pos.features_json or "{}")
             except Exception:
                 feat = {}
+            if self._ensure_margin_stop(pos, ref_price=float(pos.entry_mark or pos.entry_price)):
+                self.db.update_trade(pos)
+                try:
+                    feat = json.loads(pos.features_json or "{}")
+                except Exception:
+                    feat = {}
             fee_bps, slip_bps = self._costs(pos.venue)
 
             # Stop-loss: price hit OR estimated NET hits cash/bps budget

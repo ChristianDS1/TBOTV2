@@ -127,6 +127,8 @@ class PortfolioSnapshot(BaseModel):
     profit_factor: float
     drawdown: float
     total_trades: int
+    last_trade_id: int = 0
+    db_trade_rows: int = 0
     exploration_ratio: float
     learning_phase: str
     kill_switch: bool

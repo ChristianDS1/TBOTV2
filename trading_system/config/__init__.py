@@ -161,6 +161,8 @@ class SymbolsConfig(BaseModel):
 class TimeframesConfig(BaseModel):
     primary: str = "1m"
     lookback_bars: int = 200
+    confirm: list[str] = Field(default_factory=lambda: ["15m", "30m", "1h"])
+    anticipate: list[str] = Field(default_factory=lambda: ["30s", "15s"])
 
 
 class CryptoExchangeConfig(BaseModel):

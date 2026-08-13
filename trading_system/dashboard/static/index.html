@@ -484,7 +484,7 @@
           metric("Expectancy", fmt(s.expectancy, 3)),
           metric("Profit Factor", fmt(s.profit_factor, 2)),
           metric("Drawdown", pct(s.drawdown || 0)),
-          metric("Trades", s.total_trades ?? 0),
+          metric("Trades", `${s.total_trades ?? 0} · last #${s.last_trade_id ?? 0}`),
           metric("Explore Ratio", pct(s.exploration_ratio || 0)),
           metric("Phase", s.learning_phase || "—"),
           metric("Kill Switch", s.kill_switch ? "ON" : "OFF", s.kill_switch ? "neg" : "pos"),

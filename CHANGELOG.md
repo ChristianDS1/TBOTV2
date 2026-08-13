@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.12
+
+- Margin stays at `base_trade_size` (10) for crypto and FX; size only scales up after +€50 equity (no more size 9)
+- Monitor Trades = closed row count in DB, plus last sqlite id (ids are not reused after deletes)
+- HTF confirm 15m/30m/1h (MACD 13,21,9): skip fading into the higher-timeframe trend; add `momentum_continuation`
+- LTF 15s/30s (crypto 1s resample) + Bulkowski reversals feed trend-fade so TP can exit near the turn
+- FX opens without SL get the same 4% margin stop as crypto; missing SL is patched live
+
+## 0.1.11
+
+- Forex (and any open without SL) gets the same 4% margin stop as crypto; missing SL is patched live
+
 ## 0.1.10
 
 - Explicit objective: maximize net equity; +50%/UTC-day is the exploitation north star (discovery does not chase it)

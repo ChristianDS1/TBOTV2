@@ -210,6 +210,16 @@ def detect_trend_fade(
         if slow is not None and slow_prev is not None and slow > slow_prev:
             reasons.append("macd_slow_fade")
 
+    if is_call and bool(row.get("chart_reversal_bear")):
+        reasons.append("chart_reversal")
+    elif not is_call and bool(row.get("chart_reversal_bull")):
+        reasons.append("chart_reversal")
+    ltf = row.get("ltf_turn")
+    if is_call and ltf == "turn_down":
+        reasons.append("ltf_turn")
+    elif not is_call and ltf == "turn_up":
+        reasons.append("ltf_turn")
+
     return len(reasons) >= int(min_score), reasons
 
 
