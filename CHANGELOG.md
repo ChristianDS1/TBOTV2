@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.16
+
+- Bulkowski Phase 1: pipes/horns/pennants detectors; HTF BB mean-rev vs continuation filter
+- LTF 15s/30s patterns feed chart-reversal exits; momentum uses triangle/flag/pennant/rectangle with HTF
+
 ## 0.1.15
 
 - EXIT ENGINE Gen-5: adaptive exits with MFE/giveback tracking, weakening vs reversal vs stale

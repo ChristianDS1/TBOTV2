@@ -13,6 +13,8 @@ from trading_system.features import build_features, detect_regime, latest_featur
 from trading_system.patterns import (
     DetectedPattern,
     WEAK_PATTERNS,
+    htf_bb_entry_mode,
+    is_continuation_pattern,
     measure_target,
     pattern_opposes_htf,
 )
@@ -346,7 +348,16 @@ class BBMeanReversionStrategy(Strategy):
         ctx = context or {}
         htf = str(ctx.get("htf_bias") or "unknown")
         ltf = ctx.get("ltf_turn")
+        touch_lo = bool(row["touch_lower"])
+        touch_hi = bool(row["touch_upper"])
+        mode = htf_bb_entry_mode(
+            htf=htf, touch_lower=touch_lo, touch_upper=touch_hi
+        )
         # Don't fade into a confirmed higher-timeframe trend (continuation strategy can take it)
+        if mode == "continuation" or mode == "conflict":
+            # conflict shouldn't happen with current helper; treat like block fade
+            if (htf == "bull" and side == Side.PUT) or (htf == "bear" and side == Side.CALL):
+                return None
         if htf == "bull" and side == Side.PUT:
             return None
         if htf == "bear" and side == Side.CALL:
@@ -355,17 +366,21 @@ class BBMeanReversionStrategy(Strategy):
         confidence = max(0.0, min(100.0, (met / 5.0) * 100.0 - soft_penalty))
         features["htf_bias"] = htf
         features["ltf_turn"] = ltf
+        features["htf_bb_mode"] = mode
         pats = ctx.get("patterns") or []
         if pats:
             top = max(pats, key=lambda p: p.confidence)
             features["chart_pattern"] = top.name
             features["chart_direction"] = top.direction
-        if (htf == "bull" and side == Side.CALL) or (htf == "bear" and side == Side.PUT):
+        if mode == "mean_reversion":
+            confidence = min(100.0, confidence + 10.0)
+            features["htf_align"] = True
+        elif (htf == "bull" and side == Side.CALL) or (htf == "bear" and side == Side.PUT):
             confidence = min(100.0, confidence + 8.0)
             features["htf_align"] = True
+        # LTF already turning against a fresh fade → skip (let exit logic handle opens)
         if (side == Side.CALL and ltf == "turn_down") or (side == Side.PUT and ltf == "turn_up"):
-            confidence = max(0.0, confidence - 6.0)
-            features["ltf_against"] = True
+            return None
         if cfg.discovery_phase is False and confidence < cfg.entry_confidence_floor:
             return None
 
@@ -460,22 +475,31 @@ class MomentumContinuationStrategy(Strategy):
         close = float(row["close"])
         mid = float(row["bb_mid"])
         slow_hist = float(row.get("macd_slow_hist") or 0)
-        pats = ctx.get("patterns") or []
+        pats = list(ctx.get("patterns") or []) + list(ctx.get("htf_patterns") or [])
         cont_pat = next(
             (
                 p
                 for p in pats
-                if (htf == "bull" and p.direction == "bullish" and p.name.startswith("flag"))
-                or (htf == "bear" and p.direction == "bearish" and p.name.startswith("flag"))
+                if is_continuation_pattern(p.name, p.direction, htf)
             ),
             None,
         )
+        touch_lo = bool(row["touch_lower"])
+        touch_hi = bool(row["touch_upper"])
+        mode = htf_bb_entry_mode(
+            htf=htf, touch_lower=touch_lo, touch_upper=touch_hi
+        )
         if htf == "bull":
-            pullback = bool(row["touch_lower"]) or bool(row["rejection_bull"]) or close <= mid
+            # Pullback into support OR continuation break after consolidation pattern
+            pullback = touch_lo or bool(row["rejection_bull"]) or close <= mid
+            if mode == "continuation" and cont_pat:
+                pullback = True
             macd_ok = slow_hist >= 0
             side = Side.CALL
         else:
-            pullback = bool(row["touch_upper"]) or bool(row["rejection_bear"]) or close >= mid
+            pullback = touch_hi or bool(row["rejection_bear"]) or close >= mid
+            if mode == "continuation" and cont_pat:
+                pullback = True
             macd_ok = slow_hist <= 0
             side = Side.PUT
         if not pullback or not macd_ok:
@@ -489,6 +513,7 @@ class MomentumContinuationStrategy(Strategy):
         features = latest_feature_dict(feat)
         features["htf_bias"] = htf
         features["ltf_turn"] = ltf
+        features["htf_bb_mode"] = mode
         features["setup"] = "htf_continuation"
         if cont_pat:
             features["chart_pattern"] = cont_pat.name
@@ -594,6 +619,9 @@ class ChartPatternStrategy(Strategy):
             if pattern_opposes_htf(p, htf):
                 continue
             scored.append((p.confidence, p, str((p.details or {}).get("tf") or "htf")))
+        # LTF patterns: only as early confirmation boost when already have HTF-aligned 1m/htf pattern
+        ltf_pats = list(ctx.get("ltf_patterns") or [])
+        ltf_align = any(not pattern_opposes_htf(p, htf) for p in ltf_pats)
         if not scored:
             return None
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -657,6 +685,9 @@ class ChartPatternStrategy(Strategy):
         conf = min(100.0, float(pat.confidence) + 4.0 * len(backing))
         if htf in ("bull", "bear"):
             conf = min(100.0, conf + 8.0)
+        if ltf_align:
+            conf = min(100.0, conf + 4.0)
+            features["ltf_pattern_align"] = True
         return Signal(
             symbol=symbol,
             venue=venue,

@@ -46,6 +46,7 @@ def scan_patterns(
     found += _v_reversals(pivots, close, df)
     found += _gaps(df)
     found += _flags_pennants(df, close)
+    found += _pipes_horns(df, pivots, close, tol_pct)
     found += _triangles(pivots, close)
     found += _rectangles(pivots, close, tol_pct)
     found += _wedges(pivots, close)
@@ -226,20 +227,122 @@ def _gaps(df: pd.DataFrame) -> list[DetectedPattern]:
 
 
 def _flags_pennants(df: pd.DataFrame, close: float) -> list[DetectedPattern]:
-    """Micro flag: sharp 8–20 bar pole then 5–18 bar counter-consolidation + break."""
+    """Micro flag/pennant: sharp pole then tight consolidation + break."""
     if len(df) < 30:
         return []
     pole = df.iloc[-30:-8]
     cons = df.iloc[-8:]
     pole_move = float(pole["close"].iloc[-1] / pole["close"].iloc[0] - 1)
-    cons_range = float(cons["high"].max() - cons["low"].min()) / max(float(cons["close"].mean()), 1e-9)
+    cons_range = float(cons["high"].max() - cons["low"].min()) / max(
+        float(cons["close"].mean()), 1e-9
+    )
     if abs(pole_move) < 0.004 or cons_range > 0.006:
         return []
+    # Pennant: converging highs/lows inside consolidation
+    c_high = cons["high"].astype(float)
+    c_low = cons["low"].astype(float)
+    converging = float(c_high.iloc[-1]) < float(c_high.iloc[0]) and float(
+        c_low.iloc[-1]
+    ) > float(c_low.iloc[0])
     if pole_move > 0 and close > float(cons["high"].max()):
-        return [DetectedPattern("flag_bull", "bullish", 65.0, close)]
+        name = "pennant_bull" if converging else "flag_bull"
+        return [DetectedPattern(name, "bullish", 66.0 if converging else 65.0, close)]
     if pole_move < 0 and close < float(cons["low"].min()):
-        return [DetectedPattern("flag_bear", "bearish", 65.0, close)]
+        name = "pennant_bear" if converging else "flag_bear"
+        return [DetectedPattern(name, "bearish", 66.0 if converging else 65.0, close)]
     return []
+
+
+def _pipes_horns(
+    df: pd.DataFrame,
+    pivots: list[tuple[int, float, str]],
+    close: float,
+    tol_pct: float,
+) -> list[DetectedPattern]:
+    """
+    Pipe: two adjacent wide-range bars with near-equal extremes, then confirmed turn.
+    Horn: two pivots of same type with one bar gap, near-equal prices, then break.
+    """
+    out: list[DetectedPattern] = []
+    if len(df) < 5:
+        return out
+    o1, h1, l1, c1 = (
+        float(df["open"].iloc[-3]),
+        float(df["high"].iloc[-3]),
+        float(df["low"].iloc[-3]),
+        float(df["close"].iloc[-3]),
+    )
+    o2, h2, l2, c2 = (
+        float(df["open"].iloc[-2]),
+        float(df["high"].iloc[-2]),
+        float(df["low"].iloc[-2]),
+        float(df["close"].iloc[-2]),
+    )
+    mid_px = max((c1 + c2) / 2.0, 1e-9)
+    range1 = (h1 - l1) / mid_px
+    range2 = (h2 - l2) / mid_px
+    if range1 >= 0.0012 and range2 >= 0.0012 and is_near(l1, l2, tol_pct * 1.2):
+        neck = max(h1, h2)
+        if close > max(c1, c2) and close >= (l1 + l2) / 2.0:
+            out.append(
+                DetectedPattern(
+                    "pipe_bottom",
+                    "bullish",
+                    63.0,
+                    neck,
+                    {"p1": l1, "p2": l2, "neck": neck},
+                )
+            )
+    if range1 >= 0.0012 and range2 >= 0.0012 and is_near(h1, h2, tol_pct * 1.2):
+        neck = min(l1, l2)
+        if close < min(c1, c2) and close <= (h1 + h2) / 2.0:
+            out.append(
+                DetectedPattern(
+                    "pipe_top",
+                    "bearish",
+                    63.0,
+                    neck,
+                    {"p1": h1, "p2": h2, "neck": neck},
+                )
+            )
+
+    hs = [p for p in pivots if p[2] == "H"]
+    ls = [p for p in pivots if p[2] == "L"]
+    if len(ls) >= 2:
+        (i1, p1, _), (i2, p2, _) = ls[-2], ls[-1]
+        if 2 <= (i2 - i1) <= 4 and is_near(p1, p2, tol_pct * 1.2):
+            peak = max(
+                (px for j, px, k in pivots if k == "H" and i1 <= j <= i2),
+                default=max(p1, p2),
+            )
+            if close > peak:
+                out.append(
+                    DetectedPattern(
+                        "horn_bottom",
+                        "bullish",
+                        64.0,
+                        peak,
+                        {"p1": p1, "p2": p2, "neck": peak},
+                    )
+                )
+    if len(hs) >= 2:
+        (i1, p1, _), (i2, p2, _) = hs[-2], hs[-1]
+        if 2 <= (i2 - i1) <= 4 and is_near(p1, p2, tol_pct * 1.2):
+            valley = min(
+                (px for j, px, k in pivots if k == "L" and i1 <= j <= i2),
+                default=min(p1, p2),
+            )
+            if close < valley:
+                out.append(
+                    DetectedPattern(
+                        "horn_top",
+                        "bearish",
+                        64.0,
+                        valley,
+                        {"p1": p1, "p2": p2, "neck": valley},
+                    )
+                )
+    return out
 
 
 def _triangles(

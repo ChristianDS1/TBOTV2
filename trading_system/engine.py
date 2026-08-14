@@ -224,15 +224,24 @@ class TradingEngine:
     def _context_row(self, ctx: dict[str, Any]) -> dict[str, Any]:
         pats = ctx.get("patterns") or []
         htf_pats = ctx.get("htf_patterns") or []
+        ltf_pats = ctx.get("ltf_patterns") or []
         top = max(pats, key=lambda p: p.confidence) if pats else None
         htf_top = max(htf_pats, key=lambda p: p.confidence) if htf_pats else None
+        bear = (
+            any(getattr(p, "direction", "") == "bearish" for p in pats)
+            or any(getattr(p, "direction", "") == "bearish" for p in htf_pats)
+            or any(getattr(p, "direction", "") == "bearish" for p in ltf_pats)
+        )
+        bull = (
+            any(getattr(p, "direction", "") == "bullish" for p in pats)
+            or any(getattr(p, "direction", "") == "bullish" for p in htf_pats)
+            or any(getattr(p, "direction", "") == "bullish" for p in ltf_pats)
+        )
         return {
             "htf_bias": ctx.get("htf_bias") or "unknown",
             "ltf_turn": ctx.get("ltf_turn"),
-            "chart_reversal_bear": any(getattr(p, "direction", "") == "bearish" for p in pats)
-            or any(getattr(p, "direction", "") == "bearish" for p in htf_pats),
-            "chart_reversal_bull": any(getattr(p, "direction", "") == "bullish" for p in pats)
-            or any(getattr(p, "direction", "") == "bullish" for p in htf_pats),
+            "chart_reversal_bear": bear,
+            "chart_reversal_bull": bull,
             "chart_pattern": getattr(top, "name", None) if top else (
                 getattr(htf_top, "name", None) if htf_top else None
             ),
@@ -274,18 +283,25 @@ class TradingEngine:
         bias = combine_htf_votes(votes)
         patterns = scan_patterns(df_1m)
         ltf = None
+        ltf_patterns: list = []
         if venue != Venue.FOREX:
             for tf in self.cfg.timeframes.anticipate or []:
-                d = self._fetch_tf(symbol, venue, tf, 40)
-                if d is not None and len(d) >= 8:
-                    ltf = ltf_turn(d)
-                    if ltf:
-                        break
+                d = self._fetch_tf(symbol, venue, tf, 60)
+                if d is None or len(d) < 8:
+                    continue
+                turn = ltf_turn(d)
+                if turn and ltf is None:
+                    ltf = turn
+                if len(d) >= 30:
+                    for p in scan_patterns(d):
+                        p.details["tf"] = tf
+                        ltf_patterns.append(p)
         return {
             "htf_bias": bias,
             "htf_votes": votes,
             "patterns": patterns,
             "htf_patterns": htf_patterns,
+            "ltf_patterns": ltf_patterns,
             "ltf_turn": ltf,
         }
 
