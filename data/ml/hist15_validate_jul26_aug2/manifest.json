@@ -1,0 +1,108 @@
+{
+  "kind": "pattern_validation_ml",
+  "start": "2026-07-26",
+  "end": "2026-08-02",
+  "hist15_window": [
+    "2026-07-27",
+    "2026-08-14"
+  ],
+  "overlaps_hist15": true,
+  "simulate": false,
+  "step": 5,
+  "whitelist_path": "data\\ml\\hist15_clean\\successful_patterns.json",
+  "whitelist_names": [
+    "bb_mean_reversion",
+    "double_top",
+    "triangle_desc_down",
+    "triangle_desc_up",
+    "triangle_sym_down",
+    "triangle_sym_up",
+    "v_bottom",
+    "v_top"
+  ],
+  "model_dir": "models\\hist15_clean",
+  "model_loaded": true,
+  "ml_min_p_win": 0.12,
+  "model_auc": 0.5814274403348038,
+  "model_n_trained": 5750,
+  "mean_p_win": 0.15277802554868683,
+  "symbols": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "AUD/USD"
+  ],
+  "periods": {
+    "BTC/USDT": {
+      "n": 34,
+      "from": "2026-07-27T07:40:00+00:00",
+      "to": "2026-08-01T18:45:00+00:00"
+    },
+    "ETH/USDT": {
+      "n": 37,
+      "from": "2026-07-27T06:20:00+00:00",
+      "to": "2026-08-02T09:05:00+00:00"
+    },
+    "EUR/USD": {
+      "n": 0
+    },
+    "GBP/USD": {
+      "n": 0
+    },
+    "USD/JPY": {
+      "n": 0
+    },
+    "AUD/USD": {
+      "n": 0
+    }
+  },
+  "n_examples": 71,
+  "wins": 15,
+  "losses": 56,
+  "win_rate": 0.2112676056338028,
+  "cost_erosion": 11,
+  "label": "label_win = net_pnl > 0 (fees included)",
+  "by_family": {
+    "bb_mean_reversion": 26,
+    "momentum_continuation": 14,
+    "bulkowski_pattern": 31
+  },
+  "by_pattern": {
+    "bb_mean_reversion": {
+      "n": 10,
+      "wins": 3,
+      "wr": 0.3
+    },
+    "double_top": {
+      "n": 22,
+      "wins": 5,
+      "wr": 0.22727272727272727
+    },
+    "triangle_desc_down": {
+      "n": 18,
+      "wins": 3,
+      "wr": 0.16666666666666666
+    },
+    "triangle_sym_down": {
+      "n": 8,
+      "wins": 1,
+      "wr": 0.125
+    },
+    "v_bottom": {
+      "n": 3,
+      "wins": 0,
+      "wr": 0.0
+    },
+    "v_top": {
+      "n": 10,
+      "wins": 3,
+      "wr": 0.3
+    }
+  },
+  "bridge_live": false,
+  "bridge_note": "Deferred until OOS confirms; then pass learning to bot (pattern_evidence + optional hist15 model).",
+  "csv": "data\\ml\\hist15_validate_jul26_aug2\\examples.csv",
+  "created_at": "2026-08-15T12:36:59.387414+00:00"
+}

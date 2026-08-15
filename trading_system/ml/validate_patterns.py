@@ -107,7 +107,66 @@ def _enrich(feats: dict[str, Any], *, htf: str, pats: list) -> dict[str, Any]:
         top = max(pats, key=lambda p: p.confidence)
         out["chart_pattern"] = top.name
         out["chart_direction"] = top.direction
+    for k in (
+        "rejection_bull",
+        "rejection_bear",
+        "touch_lower",
+        "touch_upper",
+        "macd_fast_bull_cross",
+        "macd_fast_bear_cross",
+    ):
+        if k in out:
+            out[k] = bool(out[k])
     return out
+
+
+def _live_edge_gate(
+    sig: Any,
+    *,
+    price: float,
+    fee_bps: float,
+    slip_bps: float,
+    cfg: AppConfig,
+) -> tuple[bool, float, str | None]:
+    """Mirror engine fee-aware edge: hard reject / soft confidence penalty."""
+    from trading_system.execution.edge import assess_entry_edge
+
+    edge_tp = sig.take_profit
+    proxy = "take_profit"
+    if edge_tp is None:
+        mt = sig.features.get("measure_target") or sig.features.get("edge_target")
+        if mt is not None:
+            edge_tp = float(mt)
+            proxy = "measure_target"
+        elif sig.strategy == "bb_mean_reversion":
+            mid = sig.features.get("bb_mid")
+            if mid is not None:
+                edge_tp = float(mid)
+                proxy = "bb_mid"
+            else:
+                proxy = "no_tp"
+        else:
+            proxy = "no_tp"
+    edge = assess_entry_edge(
+        price=price,
+        take_profit=edge_tp,
+        fee_bps=fee_bps,
+        slippage_bps=slip_bps,
+        hard_multiple=float(cfg.execution.hard_min_edge_multiple),
+        soft_multiple=float(cfg.execution.soft_min_edge_multiple),
+    )
+    conf = float(sig.confidence)
+    if edge.hard_reject:
+        return False, conf, edge.reason
+    if edge.soft_penalty:
+        conf = max(0.0, conf - float(cfg.execution.soft_edge_confidence_penalty))
+    sig.features["edge_bps"] = edge.edge_bps
+    sig.features["round_trip_cost_bps"] = edge.round_trip_cost_bps
+    sig.features["edge_ratio"] = edge.ratio
+    sig.features["edge_proxy"] = proxy
+    if edge.soft_penalty:
+        sig.features["thin_edge"] = True
+    return True, conf, None
 
 
 def walk_whitelisted(
@@ -120,8 +179,12 @@ def walk_whitelisted(
     step: int = 5,
     simulate: bool = False,
     max_bars: int | None = None,
+    model: Any | None = None,
+    ml_min_p_win: float = 0.0,
 ) -> list[dict[str, Any]]:
-    """Causal walk: only take strategy signals whose chart_pattern is whitelisted."""
+    """Causal walk like live: whitelist → fee edge → ML p_win → EXIT FIX; label = net>0."""
+    from trading_system.ml.hist_model import HistoricalWinModel
+
     venue = _venue_for(symbol, cfg)
     start_dt = _parse_utc(start)
     end_dt = _parse_utc(end)
@@ -164,7 +227,11 @@ def walk_whitelisted(
     examples: list[dict[str, Any]] = []
     cool_until = {s.name: 0 for s in strategies}
     warm = max(cfg.strategy.bb_period + 10, 50)
-    skipped = 0
+    skipped_wl = 0
+    skipped_edge = 0
+    skipped_ml = 0
+    fee_bps, slip_bps = cfg.execution.costs_for_venue(venue)
+    hist_model: HistoricalWinModel | None = model
 
     for i in range(warm, len(feat), max(int(step), 1)):
         ts = pd.Timestamp(feat.iloc[i]["timestamp"])
@@ -175,6 +242,7 @@ def walk_whitelisted(
         if ts < pd.Timestamp(start_dt) or ts > pd.Timestamp(end_dt):
             continue
 
+        # Causal: only bars up to i (no future)
         window = df.iloc[: i + 1].reset_index(drop=True)
         htf = _htf_bias_from_1m(window.tail(min(len(window), 500)))
         pats = scan_patterns(window.tail(min(120, len(window))))
@@ -186,6 +254,7 @@ def walk_whitelisted(
             "ltf_turn": None,
             "ltf_patterns": [],
         }
+        price = float(feat.iloc[i]["close"])
         for strat in strategies:
             if i < cool_until[strat.name]:
                 continue
@@ -196,12 +265,38 @@ def walk_whitelisted(
             feats["symbol"] = symbol
             feats["strategy_family"] = strat.name
             feats["side"] = sig.side.value
+            feats["confidence"] = float(sig.confidence)
             key = _pattern_key(feats, strat.name)
             feats["chart_pattern"] = key
             if key not in whitelist:
-                skipped += 1
+                skipped_wl += 1
                 continue
-            # Direction from pattern when available
+
+            ok_edge, conf, edge_reason = _live_edge_gate(
+                sig, price=price, fee_bps=fee_bps, slip_bps=slip_bps, cfg=cfg
+            )
+            if not ok_edge:
+                skipped_edge += 1
+                continue
+            sig.confidence = conf
+            feats["confidence"] = conf
+            feats["edge_bps"] = sig.features.get("edge_bps")
+            feats["round_trip_cost_bps"] = sig.features.get("round_trip_cost_bps")
+            feats["edge_ratio"] = sig.features.get("edge_ratio")
+
+            # ML: score pre-entry features only (same as hist15), then soft-gate
+            p_win = 0.5
+            if hist_model is not None:
+                p_win = float(hist_model.predict_proba(feats))
+                feats["p_win"] = p_win
+                sig.confidence = 0.7 * float(sig.confidence) + 0.3 * (p_win * 100.0)
+                feats["confidence"] = float(sig.confidence)
+                if float(ml_min_p_win) > 0 and p_win < float(ml_min_p_win):
+                    skipped_ml += 1
+                    continue
+            else:
+                feats["p_win"] = None
+
             direction = str(feats.get("chart_direction") or "").lower()
             if direction == "bullish":
                 side = Side.CALL
@@ -211,6 +306,7 @@ def walk_whitelisted(
                 side = sig.side
 
             setup = feats.get("setup") or key
+            # Fill + EXIT FIX; label_win = net_pnl > 0 (fees included — fee-eaten = loss)
             ex = _simulate_trade(
                 side=side,
                 strategy=strat.name,
@@ -226,10 +322,18 @@ def walk_whitelisted(
             if not ex:
                 continue
             ex["hist15_wr"] = None
+            ex["p_win"] = p_win if hist_model is not None else None
             examples.append(ex)
             cool_until[strat.name] = i + 5
 
-    logger.info("%s validate n=%d skipped_non_wl=%d", symbol, len(examples), skipped)
+    logger.info(
+        "%s validate n=%d skip_wl=%d skip_edge=%d skip_ml=%d",
+        symbol,
+        len(examples),
+        skipped_wl,
+        skipped_edge,
+        skipped_ml,
+    )
     return examples
 
 
@@ -245,40 +349,51 @@ def write_validation_report(
     wl: dict[str, Any],
 ) -> Path:
     wr_map = _hist15_wr_map(wl)
+    overlap = bool(manifest.get("overlaps_hist15"))
     lines = [
-        "# Pattern validation OOS (3d)",
+        f"# Pattern validation `{manifest.get('start')}` → `{manifest.get('end')}`",
         "",
         "## Scope",
         "",
         f"- Window: `{manifest.get('start')}` → `{manifest.get('end')}` UTC",
-        f"- Hist15 train window (disjoint): `{HIST15_WINDOW[0]}` → `{HIST15_WINDOW[1]}`",
-        f"- Whitelist: `{manifest.get('whitelist_path')}`",
+        f"- Hist15 train window: `{HIST15_WINDOW[0]}` → `{HIST15_WINDOW[1]}`"
+        + (" — **OVERLAPS**" if overlap else " (disjoint)"),
+        f"- Whitelist (hist15 successful patterns): `{manifest.get('whitelist_path')}`",
+        f"- ML model: `{manifest.get('model_dir')}` loaded={manifest.get('model_loaded')}",
+        f"- ml_min_p_win soft-gate: `{manifest.get('ml_min_p_win')}`",
+        f"- Fee edge gate: live `assess_entry_edge` (hard reject / soft penalty)",
+        f"- Win label: **net_pnl > 0** (fees included; fee-eaten = loss)",
+        f"- Causal: bars only up to decision time; outcome revealed after EXIT FIX",
         f"- n trades: **{manifest.get('n_examples', 0)}**",
         f"- net wins / losses: **{manifest.get('wins', 0)}** / **{manifest.get('losses', 0)}**",
         f"- net WR: **{manifest.get('win_rate', 0):.2%}**",
+        f"- cost_erosion (gross>0 net<=0): **{manifest.get('cost_erosion', 0)}**",
+        "",
+        "## Process (live-equivalent)",
+        "",
+        "1. Whitelist chart_pattern from hist15 winners (wins>=10 & WR>=12%)",
+        "2. Fee-aware edge gate (same as engine)",
+        "3. Hist15 LightGBM `p_win` + confidence blend; soft-skip if below ml_min_p_win",
+        "4. Paper fill + EXIT FIX; score only on **net** PnL",
         "",
         "## Live bridge (deferred)",
         "",
-        "This run does **not** write `pattern_evidence` or wire `models/hist15_clean` into the live engine.",
-        "After OOS confirms identification + success, a later bridge will pass learning to the bot so it",
-        "knows which patterns to follow for entries / continuation preference / soft-reject — on top of",
-        "existing EXIT FIX exits.",
+        "Still does **not** write `pattern_evidence`. ML used offline for this confirmation only.",
         "",
         "## Other PC",
         "",
         "```text",
         "git pull origin main",
+        "# needs local models/hist15_clean/win_model.joblib (gitignored) or re-run historical-ml-run",
         "python -m trading_system historical-pattern-validate \\",
-        "  --start 2026-07-20 --end 2026-07-22 \\",
-        "  --from-dataset data/ml/hist15_clean",
+        f"  --start {manifest.get('start')} --end {manifest.get('end')} \\",
+        "  --from-dataset data/ml/hist15_clean \\",
+        "  --model-dir models/hist15_clean --ml-min-p-win 0.12",
         "```",
-        "",
-        "Needs `data/ml/hist15_clean/successful_patterns.json` (in git).",
-        "`examples.csv` is gitignored — only required to rebuild the whitelist.",
         "",
         "## By pattern vs hist15 baseline",
         "",
-        "| pattern | n | wins | OOS WR | hist15 WR |",
+        "| pattern | n | wins | WR | hist15 WR |",
         "|---|---:|---:|---:|---:|",
     ]
     if len(df):
@@ -322,16 +437,21 @@ def run_pattern_validation(
     from_dataset: str | Path | None = None,
     out_dir: str | Path | None = None,
     whitelist_path: str | Path | None = None,
+    model_dir: str | Path | None = None,
+    ml_min_p_win: float = 0.12,
     min_wins: int = DEFAULT_MIN_WINS,
     min_wr: float = DEFAULT_MIN_WR,
     step: int = 5,
     simulate: bool = False,
     max_bars: int | None = None,
 ) -> dict[str, Any]:
+    from trading_system.ml.hist_model import HistoricalWinModel
+
     cfg = cfg or load_config()
     dataset = Path(from_dataset) if from_dataset else ROOT / "data" / "ml" / "hist15_clean"
     out = Path(out_dir) if out_dir else ROOT / "data" / "ml" / "hist15_validate_3d"
     out.mkdir(parents=True, exist_ok=True)
+    mdir = Path(model_dir) if model_dir else ROOT / "models" / "hist15_clean"
 
     wl_path = Path(whitelist_path) if whitelist_path else dataset / "successful_patterns.json"
     examples_csv = dataset / "examples.csv"
@@ -353,12 +473,20 @@ def run_pattern_validation(
     if not names:
         raise ValueError("empty whitelist")
 
-    # Guard: validation window must not overlap hist15
+    model = HistoricalWinModel(mdir)
+    model_loaded = model.load()
+    if not model_loaded and not simulate:
+        logger.warning(
+            "hist15 model not loaded from %s — continuing without ML soft-gate",
+            mdir,
+        )
+
     vs = _parse_utc(start)
     ve = _parse_utc(end)
     hs = _parse_utc(HIST15_WINDOW[0])
     he = _parse_utc(HIST15_WINDOW[1])
-    if vs <= he and ve >= hs:
+    overlaps = vs <= he and ve >= hs
+    if overlaps:
         logger.warning(
             "validation window overlaps hist15 (%s–%s); continuing as requested",
             HIST15_WINDOW[0],
@@ -382,6 +510,8 @@ def run_pattern_validation(
                 step=step,
                 simulate=simulate,
                 max_bars=max_bars,
+                model=model if model_loaded else None,
+                ml_min_p_win=float(ml_min_p_win) if model_loaded else 0.0,
             )
         except Exception as e:
             logger.exception("validate failed %s: %s", sym, e)
@@ -405,6 +535,7 @@ def run_pattern_validation(
     wins = int(df["label_win"].sum()) if len(df) else 0
     n = len(df)
     losses = n - wins
+    cost_erosion = int(df["cost_erosion"].sum()) if len(df) and "cost_erosion" in df.columns else 0
     by_family = {
         f: int((df["strategy_family"] == f).sum()) if len(df) else 0 for f in FAMILIES
     }
@@ -417,27 +548,36 @@ def run_pattern_validation(
         if len(df)
         else {}
     )
-    # JSON-serialize nested
     by_pattern_out = {
         k: {"n": int(v["n"]), "wins": int(v["wins"]), "wr": float(v["wr"])}
         for k, v in by_pattern.items()
     }
+    mean_p_win = float(df["p_win"].mean()) if len(df) and "p_win" in df.columns else None
 
     manifest = {
-        "kind": "pattern_validation_oos",
+        "kind": "pattern_validation_ml",
         "start": start,
         "end": end,
         "hist15_window": list(HIST15_WINDOW),
+        "overlaps_hist15": overlaps,
         "simulate": simulate,
         "step": step,
         "whitelist_path": str(wl_path),
         "whitelist_names": sorted(names),
+        "model_dir": str(mdir),
+        "model_loaded": model_loaded,
+        "ml_min_p_win": float(ml_min_p_win) if model_loaded else 0.0,
+        "model_auc": model.auc,
+        "model_n_trained": model.n_trained,
+        "mean_p_win": mean_p_win,
         "symbols": symbols,
         "periods": periods,
         "n_examples": n,
         "wins": wins,
         "losses": losses,
         "win_rate": (wins / n) if n else 0.0,
+        "cost_erosion": cost_erosion,
+        "label": "label_win = net_pnl > 0 (fees included)",
         "by_family": by_family,
         "by_pattern": by_pattern_out,
         "bridge_live": False,

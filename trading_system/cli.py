@@ -97,6 +97,17 @@ def main(argv: list[str] | None = None) -> None:
     val.add_argument("--max-bars", type=int, default=None)
     val.add_argument("--min-wins", type=int, default=10)
     val.add_argument("--min-wr", type=float, default=0.12)
+    val.add_argument(
+        "--model-dir",
+        default=None,
+        help="Hist15 model dir (default models/hist15_clean)",
+    )
+    val.add_argument(
+        "--ml-min-p-win",
+        type=float,
+        default=0.12,
+        help="Soft-gate: skip if model p_win below this (0=score only, no skip)",
+    )
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -201,6 +212,8 @@ def main(argv: list[str] | None = None) -> None:
             from_dataset=args.from_dataset,
             out_dir=args.out,
             whitelist_path=args.whitelist,
+            model_dir=args.model_dir,
+            ml_min_p_win=float(args.ml_min_p_win),
             min_wins=int(args.min_wins),
             min_wr=float(args.min_wr),
             step=int(args.step),

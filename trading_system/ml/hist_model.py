@@ -79,6 +79,28 @@ class HistoricalWinModel:
     def _path(self) -> Path:
         return self.artifact_dir / "win_model.joblib"
 
+    def load(self) -> bool:
+        """Load persisted joblib if present. Returns True when a model is ready."""
+        p = self._path()
+        if not p.exists():
+            return False
+        data = joblib.load(p)
+        self.model = data.get("model")
+        self.backend = data.get("backend", "unknown")
+        self.brier = data.get("brier")
+        self.auc = data.get("auc")
+        self.generation = data.get("generation") or self.generation
+        meta_p = self.artifact_dir / "meta.json"
+        if meta_p.exists():
+            try:
+                meta = json.loads(meta_p.read_text(encoding="utf-8"))
+                self.n_trained = int(meta.get("n_trained") or 0)
+                self.auc = meta.get("auc", self.auc)
+                self.brier = meta.get("brier", self.brier)
+            except Exception:
+                pass
+        return self.model is not None
+
     def predict_proba(self, ex: dict[str, Any]) -> float:
         if self.model is None:
             conf = float(ex.get("confidence") or 50.0)
