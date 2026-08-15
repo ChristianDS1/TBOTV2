@@ -4,6 +4,7 @@
 
 - `historical-pattern-validate`: OOS walk on hist15 successful `chart_pattern` whitelist (default 2026-07-20..22)
 - Whitelist artifact `data/ml/hist15_clean/successful_patterns.json`; report under `data/ml/hist15_validate_3d/`
+- Extra window report: `data/ml/hist15_validate_aug2_9/` (2026-08-02..09; overlaps hist15)
 - No live bridge yet — after OOS confirms, learning will be passed to the bot (pattern_evidence / optional model)
 - Other PC: `git pull` + same CLI; needs whitelist JSON (examples.csv gitignored)
 
