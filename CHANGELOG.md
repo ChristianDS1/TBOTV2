@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.21
+
+- Weekend paper **forex OTC** (`weekend_forex_otc`): Sat/Sun entries on all configured FX pairs with Pepperstone fees; crypto weekend entries kept
+- Expanded FX universe (NZD/USD, USD/CAD, USD/CHF, EUR/GBP, EUR/JPY, GBP/JPY); synthetic 1m marks on weekend so OTC keeps moving
+- OTC weekend treated as open for the paper book (no `session_end` kills); real calendar still closed Sat/Sun
+
 ## 0.1.20
 
 - Pepperstone Razor FX fee proxy (`forex_fee_bps` 0.35 / `forex_slippage_bps` 1.0); paper leverage **50x**

@@ -30,6 +30,12 @@ symbols:
     - GBP/USD
     - USD/JPY
     - AUD/USD
+    - NZD/USD
+    - USD/CAD
+    - USD/CHF
+    - EUR/GBP
+    - EUR/JPY
+    - GBP/JPY
 
 timeframes:
   primary: 1m
@@ -143,6 +149,7 @@ execution:
   forex_fee_bps: 0.35
   forex_slippage_bps: 1.0
   weekend_use_forex_costs: true
+  weekend_forex_otc: true  # Sat/Sun paper FX OTC (Pepperstone fees; calendar still closed)
   poll_interval_seconds: 5
   # Paper leverage (margin model): margin=base_trade_size, notional=margin*leverage.
   leverage: 50.0

@@ -159,6 +159,8 @@ class ExecutionConfig(BaseModel):
     forex_slippage_bps: float = 1.0
     broker: str = "pepperstone"
     weekend_use_forex_costs: bool = True  # weekend crypto practices Pepperstone FX fees
+    # Sat/Sun paper FX OTC (calendar closed); uses Pepperstone FX fees
+    weekend_forex_otc: bool = True
     poll_interval_seconds: int = 5
     leverage: float = 50.0
     liquidation_margin_fraction: float = 0.9

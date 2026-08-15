@@ -20,6 +20,12 @@ YF_MAP = {
     "GBP/USD": "GBPUSD=X",
     "USD/JPY": "JPY=X",
     "AUD/USD": "AUDUSD=X",
+    "NZD/USD": "NZDUSD=X",
+    "USD/CAD": "CAD=X",
+    "USD/CHF": "CHF=X",
+    "EUR/GBP": "EURGBP=X",
+    "EUR/JPY": "EURJPY=X",
+    "GBP/JPY": "GBPJPY=X",
 }
 
 YF_INTERVAL = {
@@ -62,12 +68,17 @@ class ForexAdapter(MarketAdapter):
     def get_ohlcv(
         self, symbol: str, timeframe: str = "1m", limit: int = 200
     ) -> pd.DataFrame:
+        from trading_system.learning.sessions import is_weekend_utc
+
         tf = timeframe or "1m"
         cache_key = f"{symbol}:{tf}"
         try:
             if tf in ("15s", "30s", "1s"):
                 raise ValueError(f"forex has no native {tf}")
-            if self.provider == "yfinance":
+            # Weekend OTC paper: prefer synthetic so marks keep moving
+            if is_weekend_utc() and self.provider == "yfinance" and tf == "1m":
+                df = self._synthetic(symbol, limit, tf)
+            elif self.provider == "yfinance":
                 df = self._fetch_yfinance(symbol, tf, limit)
             else:
                 df = self._synthetic(symbol, limit, tf)
@@ -122,7 +133,18 @@ class ForexAdapter(MarketAdapter):
         return df.tail(limit).reset_index(drop=True)
 
     def _synthetic(self, symbol: str, limit: int, timeframe: str = "1m") -> pd.DataFrame:
-        bases = {"EUR/USD": 1.08, "GBP/USD": 1.27, "USD/JPY": 150.0, "AUD/USD": 0.66}
+        bases = {
+            "EUR/USD": 1.08,
+            "GBP/USD": 1.27,
+            "USD/JPY": 150.0,
+            "AUD/USD": 0.66,
+            "NZD/USD": 0.60,
+            "USD/CAD": 1.36,
+            "USD/CHF": 0.88,
+            "EUR/GBP": 0.86,
+            "EUR/JPY": 162.0,
+            "GBP/JPY": 189.0,
+        }
         base = bases.get(symbol, 1.0)
         rng = np.random.default_rng(abs(hash(symbol)) % 10_000)
         rets = rng.normal(0, 0.00015, size=limit)

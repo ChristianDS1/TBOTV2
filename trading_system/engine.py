@@ -176,8 +176,11 @@ class TradingEngine:
             self.risk.mark_data("crypto", False)
             venue_health["crypto"] = {"ok": False, "error": str(e)}
 
-        # --- Forex (entries only on weekday session; marks always for open FX) ---
+        # --- Forex (weekday session OR weekend OTC paper; marks always) ---
         fx_open = self.forex.calendar.is_open()
+        otc_weekend = bool(weekend and self.cfg.execution.weekend_forex_otc)
+        # Treat OTC weekend as "open for paper" so session_end does not kill FX
+        fx_session_for_book = fx_open or otc_weekend
         try:
             for sym in self.cfg.symbols.forex:
                 df = self.forex.get_ohlcv(
@@ -189,12 +192,16 @@ class TradingEngine:
                 row.update(self._context_row(ctx))
                 feature_rows[sym] = row
                 self._ohlcv_cache[sym] = df
-                if (not weekend) and self.forex.is_tradable_now(sym):
+                allow_fx = ((not weekend) and self.forex.is_tradable_now(sym)) or (
+                    otc_weekend and bool(getattr(self.forex, "_ok", True))
+                )
+                if allow_fx:
                     self._process_symbol(sym, Venue.FOREX, df, ctx)
             self.risk.mark_data("forex", True)
             fh = self.forex.health()
             venue_health["forex"] = dict(fh) if isinstance(fh, dict) else {"ok": True}
-            venue_health["forex"]["entries_enabled"] = (not weekend) and fx_open
+            venue_health["forex"]["entries_enabled"] = fx_session_for_book
+            venue_health["forex"]["forex_otc_weekend"] = otc_weekend
         except Exception as e:
             logger.exception("forex cycle")
             self.risk.mark_data("forex", False)
@@ -202,7 +209,7 @@ class TradingEngine:
 
         closed = self.executor.manage_open(
             mark_prices,
-            forex_session_open=fx_open,
+            forex_session_open=fx_session_for_book,
             close_fx_at_session_end=self.cfg.forex_session.close_intraday_at_session_end,
             feature_rows=feature_rows,
         )
