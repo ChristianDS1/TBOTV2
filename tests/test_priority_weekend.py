@@ -33,22 +33,20 @@ def test_priority_seed_names():
     assert not is_priority_setup("triangle_sym_up")
 
 
-def test_weekend_forex_otc_config_and_fees():
+def test_weekend_crypto_only_pepperstone_fees():
     cfg = load_config()
-    assert cfg.execution.weekend_forex_otc is True
-    assert "EUR/JPY" in cfg.symbols.forex
-    assert "GBP/JPY" in cfg.symbols.forex
+    assert cfg.execution.weekend_forex_otc is False
+    assert cfg.execution.weekend_use_forex_costs is True
     sat = datetime(2026, 8, 15, 14, 0, tzinfo=timezone.utc)
     assert is_weekend_utc(sat)
-    # Real calendar still closed
     assert SessionCalendar(ForexSessionConfig()).is_open(sat) is False
-    # Pepperstone FX schedule for forex (and weekend crypto)
+    # Weekend crypto uses Pepperstone FX fee schedule; weekday FX same bps
     assert cfg.execution.costs_for_venue("forex", as_of=sat) == (0.35, 1.0)
     assert cfg.execution.costs_for_venue("crypto", as_of=sat) == (0.35, 1.0)
 
 
-def test_otc_weekend_does_not_session_end_fx(tmp_path):
-    """When engine treats OTC weekend as session-open for paper, FX stays open."""
+def test_otc_flag_can_keep_fx_open_when_enabled(tmp_path):
+    """If OTC were enabled, forex_session_open=True avoids session_end."""
     cfg = load_config()
     cfg.execution.weekend_forex_otc = True
     cfg.execution.leverage = 20.0
@@ -75,7 +73,6 @@ def test_otc_weekend_does_not_session_end_fx(tmp_path):
             "UPDATE trades SET entry_time=? WHERE id=?",
             (past.isoformat(), pos.id),
         )
-    # OTC path: forex_session_open=True even though calendar closed
     closed = ex.manage_open(
         {"EUR/USD": 1.081},
         forex_session_open=True,

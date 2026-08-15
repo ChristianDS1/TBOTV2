@@ -154,7 +154,7 @@ execution:
   forex_fee_bps: 0.35
   forex_slippage_bps: 1.0
   weekend_use_forex_costs: true
-  weekend_forex_otc: true  # Sat/Sun paper FX OTC (Pepperstone fees; calendar still closed)
+  weekend_forex_otc: false  # Sat/Sun: crypto only (no paper FX OTC / synthetic charts)
   poll_interval_seconds: 5
   # Paper leverage (margin model): margin=base_trade_size, notional=margin*leverage.
   leverage: 50.0

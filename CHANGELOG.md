@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.25
+
+- Rollback: removed Pocket Option / synthetic weekend FX chart feeds (`865c40c`, `e068238`)
+- Weekend again **crypto only** (`weekend_forex_otc: false`); crypto still uses Pepperstone FX fee schedule
+- Weekday FX unchanged (yfinance + Pepperstone); peak-lock exits kept
+
 ## 0.1.22
 
 - Peak-profit lock: after `peak_pnl>0`, exit on ≥2 soft clues (MACD fade, RSI rollover/extreme, rejection, hard/chart reversal) even if current `net_est<=0`

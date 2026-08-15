@@ -176,13 +176,22 @@ class TradingEngine:
             self.risk.mark_data("crypto", False)
             venue_health["crypto"] = {"ok": False, "error": str(e)}
 
-        # --- Forex (weekday session OR weekend OTC paper; marks always) ---
+        # --- Forex (weekday session; weekend OTC only if enabled — default off) ---
         fx_open = self.forex.calendar.is_open()
         otc_weekend = bool(weekend and self.cfg.execution.weekend_forex_otc)
-        # Treat OTC weekend as "open for paper" so session_end does not kill FX
+        # OTC weekend treated as open for paper so session_end does not kill FX
         fx_session_for_book = fx_open or otc_weekend
+        open_fx = {
+            p.symbol
+            for p in self.portfolio.open_positions()
+            if getattr(p.venue, "value", p.venue) == "forex"
+            or p.venue == Venue.FOREX
+        }
         try:
             for sym in self.cfg.symbols.forex:
+                # Weekend without OTC: skip FX (no synthetic charts / no new entries)
+                if weekend and not otc_weekend and sym not in open_fx:
+                    continue
                 df = self.forex.get_ohlcv(
                     sym, self.cfg.timeframes.primary, self.cfg.timeframes.lookback_bars
                 )
