@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.18
+
+- `historical-pattern-validate`: OOS walk on hist15 successful `chart_pattern` whitelist (default 2026-07-20..22)
+- Whitelist artifact `data/ml/hist15_clean/successful_patterns.json`; report under `data/ml/hist15_validate_3d/`
+- No live bridge yet — after OOS confirms, learning will be passed to the bot (pattern_evidence / optional model)
+- Other PC: `git pull` + same CLI; needs whitelist JSON (examples.csv gitignored)
+
 ## 0.1.17
 
 - `historical-ml-run`: 15d causal walk with EXIT FIX labels, pre-move features, incremental ML

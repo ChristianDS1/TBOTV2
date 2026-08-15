@@ -48,35 +48,72 @@ def _venue_for(symbol: str, cfg: AppConfig) -> Venue:
     return Venue.FOREX if symbol in cfg.symbols.forex else Venue.CRYPTO
 
 
-def fetch_ohlcv_history(
+def _empty_ohlcv() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=["timestamp", "open", "high", "low", "close", "volume"]
+    )
+
+
+def _parse_utc(ts: str | datetime) -> datetime:
+    if isinstance(ts, datetime):
+        dt = ts
+    else:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def fetch_ohlcv_range(
     symbol: str,
     venue: Venue,
     cfg: AppConfig,
     *,
-    days: int,
-    simulate: bool,
+    start: str | datetime,
+    end: str | datetime,
+    simulate: bool = False,
+    warmup_days: float = 2.0,
 ) -> pd.DataFrame:
-    """Fetch ~days of 1m OHLCV. Document shorter windows in caller."""
-    if simulate or venue == Venue.CRYPTO and simulate:
+    """Fetch OHLCV for [start, end] UTC, plus warmup bars before start for indicators.
+
+    Crypto: 1m via exchange pagination.
+    Forex: 15m via yfinance start/end (1m only covers ~5d lookback).
+    """
+    start_dt = _parse_utc(start)
+    end_dt = _parse_utc(end)
+    # Inclusive calendar day: date-only midnight keeps through that UTC day
+    if (
+        end_dt.hour == 0
+        and end_dt.minute == 0
+        and end_dt.second == 0
+        and end_dt.microsecond == 0
+    ):
+        end_dt = end_dt + timedelta(days=1) - timedelta(milliseconds=1)
+    fetch_from = start_dt - timedelta(days=float(warmup_days))
+
+    if simulate:
         from trading_system.data.crypto import SimulatedCryptoAdapter
 
-        bars = min(days * 24 * 60, 3000)
-        return SimulatedCryptoAdapter(seed=abs(hash(symbol)) % 10_000).get_ohlcv(
+        bars = max(200, int((end_dt - fetch_from).total_seconds() / 60))
+        bars = min(bars, 5000)
+        df = SimulatedCryptoAdapter(seed=abs(hash(symbol)) % 10_000).get_ohlcv(
             symbol, "1m", bars
         )
+        freq = "1min"
+        ts = pd.date_range(start=fetch_from, periods=len(df), freq=freq, tz="UTC")
+        df = df.copy()
+        df["timestamp"] = ts[: len(df)]
+        return df[df["timestamp"] <= end_dt].reset_index(drop=True)
 
     if venue == Venue.CRYPTO:
         from trading_system.data.crypto import CryptoAdapter
 
         ex = CryptoAdapter(cfg.crypto.exchange, sandbox=cfg.crypto.sandbox)
-        # paginate ~1000 bars/request
-        need = days * 24 * 60
         timeframe = "1m"
-        since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+        cursor = int(fetch_from.timestamp() * 1000)
+        end_ms = int(end_dt.timestamp() * 1000)
         frames: list[pd.DataFrame] = []
-        got = 0
-        cursor = since
-        while got < need:
+        while cursor < end_ms:
             batch = 1000
             try:
                 raw = ex.exchange.fetch_ohlcv(
@@ -92,8 +129,9 @@ def fetch_ohlcv_history(
             )
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
             frames.append(df)
-            got += len(df)
             last_ms = int(raw[-1][0])
+            if last_ms > end_ms:
+                break
             nxt = last_ms + 60_000
             if nxt <= cursor:
                 break
@@ -101,19 +139,84 @@ def fetch_ohlcv_history(
             if len(raw) < batch:
                 break
         if not frames:
-            return pd.DataFrame(
-                columns=["timestamp", "open", "high", "low", "close", "volume"]
-            )
+            return _empty_ohlcv()
         out = pd.concat(frames, ignore_index=True).drop_duplicates("timestamp")
-        return out.sort_values("timestamp").reset_index(drop=True)
+        out = out.sort_values("timestamp")
+        out = out[
+            (out["timestamp"] >= pd.Timestamp(fetch_from))
+            & (out["timestamp"] <= pd.Timestamp(end_dt))
+        ]
+        return out.reset_index(drop=True)
 
-    # Forex via yfinance ÃÃÃ¶ use 1m for ~5d or 5m for longer
+    import yfinance as yf
+
+    from trading_system.data.forex import YF_MAP
+
+    ticker = YF_MAP.get(symbol, symbol.replace("/", "") + "=X")
+    try:
+        data = yf.download(
+            ticker,
+            start=fetch_from.strftime("%Y-%m-%d"),
+            end=(end_dt + timedelta(days=1)).strftime("%Y-%m-%d"),
+            interval="15m",
+            progress=False,
+            auto_adjust=True,
+        )
+    except Exception as e:
+        logger.warning("forex range fetch %s failed: %s", symbol, e)
+        return _empty_ohlcv()
+    if data is None or data.empty:
+        return _empty_ohlcv()
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+    data = data.reset_index()
+    ts_col = "Datetime" if "Datetime" in data.columns else "Date"
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(data[ts_col], utc=True),
+            "open": data["Open"].astype(float).values,
+            "high": data["High"].astype(float).values,
+            "low": data["Low"].astype(float).values,
+            "close": data["Close"].astype(float).values,
+            "volume": data["Volume"].fillna(0).astype(float).values
+            if "Volume" in data.columns
+            else 0.0,
+        }
+    )
+    df = df[
+        (df["timestamp"] >= pd.Timestamp(fetch_from))
+        & (df["timestamp"] <= pd.Timestamp(end_dt))
+    ]
+    return df.sort_values("timestamp").reset_index(drop=True)
+
+
+def fetch_ohlcv_history(
+    symbol: str,
+    venue: Venue,
+    cfg: AppConfig,
+    *,
+    days: int,
+    simulate: bool,
+) -> pd.DataFrame:
+    """Fetch ~days of 1m OHLCV. Document shorter windows in caller."""
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    if simulate or venue == Venue.CRYPTO:
+        return fetch_ohlcv_range(
+            symbol,
+            venue,
+            cfg,
+            start=start,
+            end=end,
+            simulate=simulate,
+            warmup_days=0,
+        )
+
     from trading_system.data.forex import ForexAdapter
 
     fx = ForexAdapter(cfg.forex_session, provider=cfg.forex.provider)
     if days <= 5:
         return fx.get_ohlcv(symbol, "1m", min(days * 24 * 60, 5000))
-    # longer: 15m resample proxy labeled as 1m steps for offline (document)
     df = fx.get_ohlcv(symbol, "15m", min(days * 24 * 4, 2000))
     return df
 

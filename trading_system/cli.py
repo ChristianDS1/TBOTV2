@@ -79,6 +79,25 @@ def main(argv: list[str] | None = None) -> None:
         help="Soft-gate after warmup (0=observe all; e.g. 0.35 to skip low p_win)",
     )
 
+    val = sub.add_parser(
+        "historical-pattern-validate",
+        help="OOS walk on whitelisted hist15 patterns (no retrain, no live bridge)",
+    )
+    val.add_argument("--start", default="2026-07-20", help="UTC start YYYY-MM-DD")
+    val.add_argument("--end", default="2026-07-22", help="UTC end YYYY-MM-DD (inclusive day)")
+    val.add_argument(
+        "--from-dataset",
+        default=None,
+        help="Hist15 dataset dir (default data/ml/hist15_clean)",
+    )
+    val.add_argument("--out", default=None, help="Output dir (default data/ml/hist15_validate_3d)")
+    val.add_argument("--whitelist", default=None, help="Optional successful_patterns.json path")
+    val.add_argument("--step", type=int, default=5)
+    val.add_argument("--simulate", action="store_true")
+    val.add_argument("--max-bars", type=int, default=None)
+    val.add_argument("--min-wins", type=int, default=10)
+    val.add_argument("--min-wr", type=float, default=0.12)
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
@@ -169,6 +188,24 @@ def main(argv: list[str] | None = None) -> None:
             step=int(args.step),
             retrain_every=int(args.retrain_every),
             ml_min_p_win=float(args.ml_min_p_win),
+        )
+        print(json.dumps(manifest, indent=2, default=str))
+
+    elif args.cmd == "historical-pattern-validate":
+        from trading_system.ml.validate_patterns import run_pattern_validation
+
+        manifest = run_pattern_validation(
+            cfg,
+            start=str(args.start),
+            end=str(args.end),
+            from_dataset=args.from_dataset,
+            out_dir=args.out,
+            whitelist_path=args.whitelist,
+            min_wins=int(args.min_wins),
+            min_wr=float(args.min_wr),
+            step=int(args.step),
+            simulate=bool(args.simulate),
+            max_bars=args.max_bars,
         )
         print(json.dumps(manifest, indent=2, default=str))
 
