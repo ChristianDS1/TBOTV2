@@ -7,6 +7,8 @@ venv/
 data/*.db
 data/*.db-journal
 data/*.bak*
+data/ml/**/examples.csv
+data/ml/**/examples.parquet
 !data/.gitkeep
 models/artifacts/
 *.joblib

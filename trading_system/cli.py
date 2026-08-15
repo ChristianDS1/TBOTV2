@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 
@@ -59,6 +60,24 @@ def main(argv: list[str] | None = None) -> None:
     reset.add_argument("--db", default=None, help="Optional path to trading.db")
     reset.add_argument("--dry-run", action="store_true")
     reset.add_argument("--yes", "-y", action="store_true")
+
+    hist = sub.add_parser(
+        "historical-ml-run",
+        help="Causal N-day historical walk with EXIT FIX labels + incremental ML (no 24/7 bot)",
+    )
+    hist.add_argument("--days", type=int, default=15)
+    hist.add_argument("--out", default=None, help="Dataset dir (default data/ml/hist15_clean)")
+    hist.add_argument("--model-dir", default=None, help="Model dir (default models/hist15_clean)")
+    hist.add_argument("--simulate", action="store_true")
+    hist.add_argument("--max-bars", type=int, default=None)
+    hist.add_argument("--step", type=int, default=5, help="Evaluate every N bars (default 5)")
+    hist.add_argument("--retrain-every", type=int, default=25)
+    hist.add_argument(
+        "--ml-min-p-win",
+        type=float,
+        default=0.0,
+        help="Soft-gate after warmup (0=observe all; e.g. 0.35 to skip low p_win)",
+    )
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -136,6 +155,22 @@ def main(argv: list[str] | None = None) -> None:
             argv.append("--yes")
         sys.argv = [str(script), *argv]
         runpy.run_path(str(script), run_name="__main__")
+
+    elif args.cmd == "historical-ml-run":
+        from trading_system.ml.hist_run import run_historical_ml
+
+        manifest = run_historical_ml(
+            cfg,
+            days=int(args.days),
+            out_dir=args.out,
+            model_dir=args.model_dir,
+            simulate=bool(args.simulate),
+            max_bars=args.max_bars,
+            step=int(args.step),
+            retrain_every=int(args.retrain_every),
+            ml_min_p_win=float(args.ml_min_p_win),
+        )
+        print(json.dumps(manifest, indent=2, default=str))
 
     else:
         parser.print_help()

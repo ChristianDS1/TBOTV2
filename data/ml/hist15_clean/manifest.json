@@ -1,0 +1,81 @@
+{
+  "generation": "HIST15_CLEAN_c106a30",
+  "days_requested": 15,
+  "simulate": false,
+  "step": 5,
+  "retrain_every": 25,
+  "ml_min_p_win": 0.0,
+  "symbols": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "AUD/USD"
+  ],
+  "periods": {
+    "BTC/USDT": {
+      "n": 2936,
+      "from": "2026-07-31T00:50:00+00:00",
+      "to": "2026-08-14T23:35:00+00:00"
+    },
+    "ETH/USDT": {
+      "n": 3133,
+      "from": "2026-07-31T00:57:00+00:00",
+      "to": "2026-08-14T23:37:00+00:00"
+    },
+    "EUR/USD": {
+      "n": 259,
+      "from": "2026-07-27T07:00:00+00:00",
+      "to": "2026-08-14T19:00:00+00:00"
+    },
+    "GBP/USD": {
+      "n": 281,
+      "from": "2026-07-27T07:00:00+00:00",
+      "to": "2026-08-14T19:00:00+00:00"
+    },
+    "USD/JPY": {
+      "n": 291,
+      "from": "2026-07-27T06:00:00+00:00",
+      "to": "2026-08-14T20:00:00+00:00"
+    },
+    "AUD/USD": {
+      "n": 288,
+      "from": "2026-07-27T07:00:00+00:00",
+      "to": "2026-08-14T20:15:00+00:00"
+    }
+  },
+  "n_examples": 7188,
+  "by_family": {
+    "bb_mean_reversion": 403,
+    "momentum_continuation": 1250,
+    "bulkowski_pattern": 5535
+  },
+  "by_symbol": {
+    "ETH/USDT": 3133,
+    "BTC/USDT": 2936,
+    "USD/JPY": 291,
+    "AUD/USD": 288,
+    "GBP/USD": 281,
+    "EUR/USD": 259
+  },
+  "audits": {
+    "ok": true,
+    "n": 7188,
+    "issues": [],
+    "no_lookahead_bar_order_ok": true,
+    "duplicates": 0,
+    "families_present": [
+      "bb_mean_reversion",
+      "bulkowski_pattern",
+      "momentum_continuation"
+    ]
+  },
+  "csv": "data\\ml\\hist15_clean\\examples.csv",
+  "model_dir": "models\\hist15_clean",
+  "model_backend": "lightgbm",
+  "model_brier": 0.10785190000922917,
+  "model_auc": 0.5814274403348038,
+  "created_at": "2026-08-14T23:49:11.753500+00:00",
+  "report": "data\\ml\\hist15_clean\\REPORT.md"
+}

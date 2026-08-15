@@ -1,0 +1,31 @@
+{
+  "generation": "HIST15_CLEAN_c106a30",
+  "backend": "lightgbm",
+  "brier": 0.10785190000922917,
+  "auc": 0.5814274403348038,
+  "n_trained": 5750,
+  "feature_dim": 19,
+  "numeric_keys": [
+    "rsi",
+    "bb_width",
+    "macd_fast_hist",
+    "macd_slow_hist",
+    "pct_from_mid",
+    "confidence"
+  ],
+  "bool_keys": [
+    "rejection_bull",
+    "rejection_bear",
+    "touch_lower",
+    "touch_upper",
+    "macd_fast_bull_cross",
+    "macd_fast_bear_cross"
+  ],
+  "families": [
+    "bb_mean_reversion",
+    "momentum_continuation",
+    "bulkowski_pattern"
+  ],
+  "loaded_legacy_weights": false,
+  "label": "label_win (net_pnl > 0)"
+}

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.17
+
+- `historical-ml-run`: 15d causal walk with EXIT FIX labels, pre-move features, incremental ML
+- Soft-gate by p_win (net-win label only); outputs `data/ml/hist15_clean` + `models/hist15_clean`
+
 ## 0.1.16
 
 - Bulkowski Phase 1: pipes/horns/pennants detectors; HTF BB mean-rev vs continuation filter
