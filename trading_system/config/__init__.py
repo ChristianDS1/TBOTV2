@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -141,16 +142,25 @@ class ExitConfig(BaseModel):
     fade_score_flat_or_loss: int = 3
     fade_score_with_mfe_giveback: int = 1
     log_every_seconds: float = 60.0
+    # Profit-lock: only trend_reversal when net>0; classify reversal vs continuation
+    trend_reversal_require_net_profit: bool = True
+    limbo_flat_max_minutes: float = 10.0
+    continuation_hold: bool = True
+    # Soft floor for aggressive lock when pattern ambiguous (fraction of margin)
+    min_lock_net_margin_pct: float = 0.15
 
 
 class ExecutionConfig(BaseModel):
+    # Crypto (Binance paper) — unused on weekend when weekend_use_forex_costs
     fee_bps: float = 4.0
     slippage_bps: float = 2.0
-    # Forex spot is cheaper than crypto perps — separate paper costs
-    forex_fee_bps: float = 1.0
+    # Pepperstone Razor FX proxy: ~$3.50/side/lot ≈ 0.35 bps + raw spread
+    forex_fee_bps: float = 0.35
     forex_slippage_bps: float = 1.0
+    broker: str = "pepperstone"
+    weekend_use_forex_costs: bool = True  # weekend crypto practices Pepperstone FX fees
     poll_interval_seconds: int = 5
-    leverage: float = 20.0
+    leverage: float = 50.0
     liquidation_margin_fraction: float = 0.9
     hard_min_edge_multiple: float = 0.5
     soft_min_edge_multiple: float = 1.15
@@ -159,10 +169,20 @@ class ExecutionConfig(BaseModel):
     # Legacy alias kept for older configs/tests
     tp_require_non_negative_net: bool = True
 
-    def costs_for_venue(self, venue: str | Any) -> tuple[float, float]:
-        """Return (fee_bps, slippage_bps) for venue."""
+    def costs_for_venue(
+        self,
+        venue: str | Any,
+        *,
+        as_of: datetime | None = None,
+    ) -> tuple[float, float]:
+        """Return (fee_bps, slippage_bps). Weekend crypto uses Pepperstone FX schedule."""
+        from trading_system.learning.sessions import is_weekend_utc
+
         v = venue.value if hasattr(venue, "value") else str(venue)
-        if v.lower() == "forex":
+        use_fx = v.lower() == "forex"
+        if bool(self.weekend_use_forex_costs) and is_weekend_utc(as_of):
+            use_fx = True
+        if use_fx:
             return float(self.forex_fee_bps), float(self.forex_slippage_bps)
         return float(self.fee_bps), float(self.slippage_bps)
 

@@ -141,6 +141,9 @@ class TradingEngine:
         mark_prices: dict[str, float] = {}
         feature_rows: dict[str, dict[str, Any]] = {}
         venue_health: dict[str, Any] = {}
+        from trading_system.learning.sessions import is_weekend_utc
+
+        weekend = is_weekend_utc()
 
         # Refill before trying new entries if flat & broke
         self.portfolio.maybe_refill(
@@ -150,7 +153,7 @@ class TradingEngine:
             mark_prices=mark_prices,
         )
 
-        # --- Crypto ---
+        # --- Crypto (entries only on weekend; always refresh marks for open book) ---
         try:
             for sym in self.cfg.symbols.crypto:
                 df = self.crypto.get_ohlcv(
@@ -162,15 +165,18 @@ class TradingEngine:
                 row.update(self._context_row(ctx))
                 feature_rows[sym] = row
                 self._ohlcv_cache[sym] = df
-                self._process_symbol(sym, Venue.CRYPTO, df, ctx)
+                if weekend:
+                    self._process_symbol(sym, Venue.CRYPTO, df, ctx)
             self.risk.mark_data("crypto", True)
-            venue_health["crypto"] = self.crypto.health()
+            ch = self.crypto.health()
+            venue_health["crypto"] = dict(ch) if isinstance(ch, dict) else {"ok": True}
+            venue_health["crypto"]["entries_enabled"] = weekend
         except Exception as e:
             logger.exception("crypto cycle")
             self.risk.mark_data("crypto", False)
             venue_health["crypto"] = {"ok": False, "error": str(e)}
 
-        # --- Forex (session gated) ---
+        # --- Forex (entries only on weekday session; marks always for open FX) ---
         fx_open = self.forex.calendar.is_open()
         try:
             for sym in self.cfg.symbols.forex:
@@ -183,10 +189,12 @@ class TradingEngine:
                 row.update(self._context_row(ctx))
                 feature_rows[sym] = row
                 self._ohlcv_cache[sym] = df
-                if self.forex.is_tradable_now(sym):
+                if (not weekend) and self.forex.is_tradable_now(sym):
                     self._process_symbol(sym, Venue.FOREX, df, ctx)
             self.risk.mark_data("forex", True)
-            venue_health["forex"] = self.forex.health()
+            fh = self.forex.health()
+            venue_health["forex"] = dict(fh) if isinstance(fh, dict) else {"ok": True}
+            venue_health["forex"]["entries_enabled"] = (not weekend) and fx_open
         except Exception as e:
             logger.exception("forex cycle")
             self.risk.mark_data("forex", False)
@@ -251,14 +259,23 @@ class TradingEngine:
             or any(getattr(p, "direction", "") == "bullish" for p in htf_pats)
             or any(getattr(p, "direction", "") == "bullish" for p in ltf_pats)
         )
+        active = []
+        for p in list(pats) + list(htf_pats) + list(ltf_pats):
+            active.append(
+                {
+                    "name": getattr(p, "name", None),
+                    "direction": getattr(p, "direction", None),
+                }
+            )
         return {
             "htf_bias": ctx.get("htf_bias") or "unknown",
             "ltf_turn": ctx.get("ltf_turn"),
             "chart_reversal_bear": bear,
             "chart_reversal_bull": bull,
-            "chart_pattern": getattr(top, "name", None) if top else (
-                getattr(htf_top, "name", None) if htf_top else None
-            ),
+            "chart_pattern": getattr(top, "name", None)
+            if top
+            else (getattr(htf_top, "name", None) if htf_top else None),
+            "active_patterns": active,
         }
 
     def _fetch_tf(self, symbol: str, venue: Venue, tf: str, limit: int):

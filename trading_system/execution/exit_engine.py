@@ -16,6 +16,7 @@ from trading_system.execution.edge import (
     score_trend_fade,
     unrealized_pnl_on_notional,
 )
+from trading_system.patterns.coverage import classify_exit_pattern_context
 from trading_system.types import Position, Side
 
 logger = logging.getLogger(__name__)
@@ -185,6 +186,17 @@ def decide_exit(
     feat["htf_bias"] = row.get("htf_bias")
     feat["ltf_turn"] = row.get("ltf_turn")
 
+    pattern_class = classify_exit_pattern_context(
+        side=pos.side,
+        htf=str(row.get("htf_bias") or "unknown"),
+        row=row,
+    )
+    feat["exit_pattern_class"] = pattern_class
+    thresholds["pattern_class"] = pattern_class
+    thresholds["require_net_profit"] = bool(
+        getattr(cfg, "trend_reversal_require_net_profit", True)
+    )
+
     snapshot = {
         "entry_time": pos.entry_time.isoformat() if pos.entry_time else None,
         "entry_price": pos.entry_price,
@@ -203,6 +215,7 @@ def decide_exit(
         "trend_fade_components": components,
         "weakening_state": weakening,
         "reversal_state": state == "reversal",
+        "exit_pattern_class": pattern_class,
         "htf_bias": row.get("htf_bias"),
         "ltf_turn": row.get("ltf_turn"),
         "net_est": net_est,
@@ -212,16 +225,32 @@ def decide_exit(
 
     # Progressing favorably → never force adaptive exit (except hard stale handled below)
     making_progress = mins_since < float(cfg.stale_progress_minutes) and move_pct >= mfe_pct - 1e-9
+    peak_pnl = float(feat.get("peak_pnl") or 0.0)
+    ever_net_profit = peak_pnl > 0 or net_est > 0
+    require_net = bool(getattr(cfg, "trend_reversal_require_net_profit", True))
+    continuation_hold = bool(getattr(cfg, "continuation_hold", True))
+    limbo_max = float(getattr(cfg, "limbo_flat_max_minutes", 10.0) or 10.0)
+    min_lock = float(getattr(cfg, "min_lock_net_margin_pct", 0.15) or 0.0)
+    margin = abs(float(pos.qty or 0.0))
+    worth_lock = net_est > 0 and (
+        pattern_class == "hard_reversal"
+        or min_lock <= 0
+        or net_est
+        >= (margin * min_lock if min_lock < 1.0 else margin * min_lock / 100.0)
+    )
 
-    if held < float(min_hold_minutes):
+    def _hold(state_out: str = "hold") -> ExitDecision:
         return ExitDecision(
             reason=None,
-            state=state if state != "hold" else "hold",
+            state=state_out,
             score=score,
             components=components,
             thresholds_used=thresholds,
             snapshot=snapshot,
         )
+
+    if held < float(min_hold_minutes):
+        return _hold(state if state != "hold" else "hold")
 
     # Hard stale > max: no recent favorable extreme
     if held >= float(cfg.stale_position_max_minutes):
@@ -254,14 +283,62 @@ def decide_exit(
                 snapshot=snapshot,
             )
 
-    # Profit protection: significant MFE + giveback + weakening
+    # Flat/loss: never trend_reversal — wait SL or limbo timeout
+    if require_net and net_est <= 0:
+        if held >= limbo_max and not ever_net_profit:
+            snapshot["exit_reason"] = "limbo_timeout"
+            return ExitDecision(
+                reason="limbo_timeout",
+                state="stale",
+                score=score,
+                components=components,
+                thresholds_used=thresholds,
+                snapshot=snapshot,
+            )
+        return _hold("weakening" if weakening else "hold")
+
+    # --- In net profit ---
+    # Continuation forming → let it run (do not kill for thin profit)
+    if continuation_hold and pattern_class == "continuation":
+        # Still protect if giveback is severe after real MFE
+        if (
+            mfe_pct >= float(cfg.min_mfe_pct_for_protection)
+            and giveback >= float(cfg.giveback_reversal_pct)
+            and weakening
+            and score >= int(cfg.fade_score_in_profit)
+        ):
+            snapshot["exit_reason"] = "profit_protection"
+            return ExitDecision(
+                reason="profit_protection",
+                state="weakening",
+                score=score,
+                components=components,
+                thresholds_used=thresholds,
+                snapshot=snapshot,
+            )
+        return _hold("hold")
+
+    # Hard reversal against the side → lock profit now
+    if pattern_class == "hard_reversal" and (
+        state == "reversal" or score >= need or has_chart_rev or weakening
+    ):
+        snapshot["exit_reason"] = "trend_reversal"
+        return ExitDecision(
+            reason="trend_reversal",
+            state="reversal",
+            score=score,
+            components=components,
+            thresholds_used=thresholds,
+            snapshot=snapshot,
+        )
+
+    # Profit protection: significant MFE + giveback + weakening (not continuation)
     if (
         mfe_pct >= float(cfg.min_mfe_pct_for_protection)
         and giveback >= float(cfg.giveback_protect_pct)
         and weakening
         and score >= int(cfg.fade_score_with_mfe_giveback)
     ):
-        # Strong evidence → reversal; mild evidence → protect peak profit
         if score >= int(cfg.fade_score_in_profit) or has_chart_rev:
             reason = "trend_reversal"
         else:
@@ -276,9 +353,8 @@ def decide_exit(
             snapshot=snapshot,
         )
 
-    # Pure reversal path (adaptive score) — may exit even if net slipped from peak
-    if state == "reversal" and score >= need:
-        # Flat/loss with weak MFE already baked into higher `need`
+    # Ambiguous: only exit if fade is strong AND profit is worth locking
+    if state == "reversal" and score >= need and worth_lock:
         snapshot["exit_reason"] = "trend_reversal"
         return ExitDecision(
             reason="trend_reversal",
@@ -289,11 +365,11 @@ def decide_exit(
             snapshot=snapshot,
         )
 
-    # High giveback + chart reversal confirmation
     if (
         mfe_pct >= float(cfg.min_mfe_pct_for_protection)
         and giveback >= float(cfg.giveback_reversal_pct)
         and has_chart_rev
+        and worth_lock
     ):
         snapshot["exit_reason"] = "trend_reversal"
         return ExitDecision(
@@ -305,14 +381,7 @@ def decide_exit(
             snapshot=snapshot,
         )
 
-    return ExitDecision(
-        reason=None,
-        state=state,
-        score=score,
-        components=components,
-        thresholds_used=thresholds,
-        snapshot=snapshot,
-    )
+    return _hold(state)
 
 
 def maybe_log_exit_eval(
@@ -330,7 +399,7 @@ def maybe_log_exit_eval(
     last_log_ts[tid] = monotonic_now
     snap = decision.snapshot
     logger.info(
-        "EXIT_EVAL id=%s %s %s state=%s score=%s comps=%s mfe=%.3f%% giveback=%.2f "
+        "EXIT_EVAL id=%s %s %s state=%s score=%s comps=%s class=%s mfe=%.3f%% giveback=%.2f "
         "held=%.1fm since_ext=%.1fm net_est=%.4f reason=%s",
         pos.id,
         _side_str(pos.side),
@@ -338,6 +407,7 @@ def maybe_log_exit_eval(
         decision.state,
         decision.score,
         decision.components,
+        snap.get("exit_pattern_class"),
         float(snap.get("mfe_pct") or 0),
         float(snap.get("giveback_pct") or 0),
         float(snap.get("trade_duration_minutes") or 0),

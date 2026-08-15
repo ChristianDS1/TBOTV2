@@ -588,12 +588,15 @@ def test_entry_edge_hard_and_soft():
 
 
 def test_forex_costs_cheaper_than_crypto(cfg):
-    crypto = cfg.execution.costs_for_venue("crypto")
-    forex = cfg.execution.costs_for_venue("forex")
+    weekday = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)  # Friday
+    weekend = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)  # Saturday
+    crypto = cfg.execution.costs_for_venue("crypto", as_of=weekday)
+    forex = cfg.execution.costs_for_venue("forex", as_of=weekday)
     assert crypto == (4.0, 2.0)
-    assert forex == (1.0, 1.0)
-    # round-trip: crypto 12 bps vs forex 4 bps
+    assert forex == (0.35, 1.0)  # Pepperstone Razor proxy
     assert 2 * sum(forex) < 2 * sum(crypto)
+    # Weekend crypto practices FX fee schedule
+    assert cfg.execution.costs_for_venue("crypto", as_of=weekend) == forex
 
 
 def test_tp_deferred_when_net_negative(cfg, tmp_db):
@@ -659,6 +662,9 @@ def test_leverage_scales_notional_and_fees(cfg, tmp_db):
 
     port = Portfolio(tmp_db, 100)
     cfg.execution.leverage = 20.0
+    cfg.execution.weekend_use_forex_costs = False  # pin crypto 4+2 schedule
+    cfg.execution.fee_bps = 4.0
+    cfg.execution.slippage_bps = 2.0
     ex = PaperExecutor(cfg, tmp_db, port)
     sig = Signal(
         symbol="BTC/USDT",
@@ -955,7 +961,7 @@ def test_trend_fade_exit_requires_score_and_net(cfg, tmp_db):
             "UPDATE trades SET entry_time=? WHERE id=?",
             (past.isoformat(), pos.id),
         )
-    # Favorable mark so net > 0 after fees (~ +40 bps on notional 200)
+    # Favorable mark so net > 0; hard chart reversal → lock
     fade_row = {
         "rejection_bear": True,
         "macd_fast_bear_cross": True,
@@ -966,6 +972,8 @@ def test_trend_fade_exit_requires_score_and_net(cfg, tmp_db):
         "rsi_prev": 58,
         "macd_slow_hist": 0.0,
         "macd_slow_hist_prev": 0.1,
+        "chart_reversal_bear": True,
+        "htf_bias": "bull",
     }
     closed = ex.manage_open(
         {"BTC/USDT": 65260.0},
@@ -1048,9 +1056,7 @@ def test_stop_loss_net_budget_includes_exit_fee(cfg, tmp_db):
 
 
 def test_no_time_stop_even_past_max_hold(cfg, tmp_db):
-    """time_stop is disabled — winners and losers stay open past max_hold."""
-    from datetime import timedelta
-
+    """time_stop disabled — past max_hold alone does not exit (raise limbo for this case)."""
     from trading_system.execution import PaperExecutor
     from trading_system.portfolio import Portfolio
 
@@ -1062,6 +1068,9 @@ def test_no_time_stop_even_past_max_hold(cfg, tmp_db):
     cfg.strategy.max_hold_minutes = 1
     cfg.strategy.preferred_hold_minutes = 1
     cfg.strategy.min_hold_minutes = 0
+    cfg.exit.limbo_flat_max_minutes = 60.0  # isolate from limbo_timeout
+    cfg.exit.stale_position_max_minutes = 120.0
+    cfg.exit.stale_soft_minutes = 90.0
     ex = PaperExecutor(cfg, tmp_db, port)
 
     def _open(symbol: str, px: float) -> None:

@@ -3,9 +3,11 @@
 from trading_system.patterns.coverage import (
     CONTINUATION_PATTERN_PREFIXES,
     HIGH_PRIORITY_NAMES,
+    classify_exit_pattern_context,
     coverage_report,
     htf_bb_entry_mode,
     is_continuation_pattern,
+    is_hard_reversal_against_side,
 )
 from trading_system.patterns.detectors import (
     DetectedPattern,
@@ -25,10 +27,12 @@ __all__ = [
     "WEAK_PATTERNS",
     "best_reversal",
     "combine_htf_votes",
+    "classify_exit_pattern_context",
     "coverage_report",
     "find_pivots",
     "htf_bb_entry_mode",
     "is_continuation_pattern",
+    "is_hard_reversal_against_side",
     "is_near",
     "ltf_turn",
     "macd_htf_bias",

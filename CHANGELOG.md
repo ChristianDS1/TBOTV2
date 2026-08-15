@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.20
+
+- Pepperstone Razor FX fee proxy (`forex_fee_bps` 0.35 / `forex_slippage_bps` 1.0); paper leverage **50x**
+- Weekday entries: FX only; weekend entries: crypto only, charged with FX fee schedule (`weekend_use_forex_costs`)
+- EXIT FIX: `trend_reversal` only when net>0; flat/loss waits SL or `limbo_timeout` (10m never-profit); classify forming pattern (`hard_reversal` lock / `continuation` hold / ambiguous)
+- Engine context row passes `active_patterns` into exit classifier
+
 ## 0.1.19
 
 - Paper live bridge: priority patterns (3 confirmations ∩ hist15) obligatory when indicators pass

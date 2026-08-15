@@ -413,3 +413,97 @@ def test_decide_exit_unit_mfe_giveback(cfg):
         min_hold_minutes=0,
     )
     assert d.reason == "profit_protection"
+
+
+def test_underwater_reversal_holds_for_sl_or_limbo(cfg):
+    """trend_reversal never fires when net <= 0 — wait SL / limbo."""
+    pos = Position(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb",
+        qty=10,
+        entry_price=100,
+        entry_mark=100,
+        entry_time=datetime.now(timezone.utc) - timedelta(minutes=5),
+        status=TradeStatus.OPEN,
+        leverage=20,
+        notional=200,
+        features_json="{}",
+    )
+    d = decide_exit(
+        pos,
+        99.5,
+        _reversal_row_long(),
+        {},
+        cfg.exit,
+        fee_bps=0.35,
+        slip_bps=1.0,
+        min_hold_minutes=0,
+    )
+    assert d.reason is None
+
+
+def test_limbo_timeout_never_profit(cfg):
+    pos = Position(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb",
+        qty=10,
+        entry_price=100,
+        entry_mark=100,
+        entry_time=datetime.now(timezone.utc) - timedelta(minutes=12),
+        status=TradeStatus.OPEN,
+        leverage=20,
+        notional=200,
+        features_json="{}",
+    )
+    d = decide_exit(
+        pos,
+        99.8,
+        _neutral_row(),
+        {},
+        cfg.exit,
+        fee_bps=0.35,
+        slip_bps=1.0,
+        min_hold_minutes=0,
+    )
+    assert d.reason == "limbo_timeout"
+
+
+def test_continuation_holds_thin_profit(cfg):
+    pos = Position(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb",
+        qty=10,
+        entry_price=100,
+        entry_mark=100,
+        entry_time=datetime.now(timezone.utc) - timedelta(minutes=5),
+        status=TradeStatus.OPEN,
+        leverage=20,
+        notional=200,
+        features_json="{}",
+    )
+    row = {
+        **_reversal_row_long(),
+        "chart_reversal_bear": False,
+        "htf_bias": "bull",
+        "active_patterns": [{"name": "flag_bull", "direction": "bullish"}],
+    }
+    # Strip hard-reversal flags so classifier is continuation
+    row["rejection_bear"] = True  # fade present but continuation wins
+    d = decide_exit(
+        pos,
+        100.5,
+        row,
+        {},
+        cfg.exit,
+        fee_bps=0.35,
+        slip_bps=1.0,
+        min_hold_minutes=0,
+    )
+    assert d.reason is None
+    assert d.snapshot.get("exit_pattern_class") == "continuation"
