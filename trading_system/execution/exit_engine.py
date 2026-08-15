@@ -137,6 +137,102 @@ def _required_fade_score(
     return int(cfg.fade_score_flat_or_loss)
 
 
+def _peak_lock_clues(
+    side: Side | str,
+    row: dict[str, Any],
+    components: list[str],
+    pattern_class: str,
+    cfg: ExitConfig,
+) -> tuple[int, list[str], bool]:
+    """
+    Soft momentum / reversal clues after a profitable peak.
+
+    Returns (count, clue_names, hardish) where hardish means prefer trend_reversal
+    (hard pattern / chart / rejection) over profit_protection.
+    """
+    clues: list[str] = []
+    hardish = False
+    is_call = _is_call(side)
+    comps = set(components)
+
+    if pattern_class == "hard_reversal" or "chart_reversal" in comps:
+        clues.append("hard_or_chart_reversal")
+        hardish = True
+    if is_call and bool(row.get("rejection_bear")):
+        clues.append("rejection_bear")
+        hardish = True
+    elif (not is_call) and bool(row.get("rejection_bull")):
+        clues.append("rejection_bull")
+        hardish = True
+    if "macd_fast_fade" in comps:
+        clues.append("macd_fast_fade")
+    if "macd_slow_fade" in comps:
+        clues.append("macd_slow_fade")
+    if "rsi_rollover" in comps:
+        clues.append("rsi_rollover")
+
+    rsi_v = row.get("rsi")
+    try:
+        rsi_f = float(rsi_v) if rsi_v is not None else None
+    except (TypeError, ValueError):
+        rsi_f = None
+    ob = float(getattr(cfg, "rsi_overbought", 70.0) or 70.0)
+    os_ = float(getattr(cfg, "rsi_oversold", 30.0) or 30.0)
+    if rsi_f is not None:
+        if is_call and rsi_f >= ob:
+            clues.append("rsi_overbought")
+        elif (not is_call) and rsi_f <= os_:
+            clues.append("rsi_oversold")
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for c in clues:
+        if c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    return len(uniq), uniq, hardish
+
+
+def _try_peak_lock(
+    *,
+    peak_pnl: float,
+    cfg: ExitConfig,
+    side: Side | str,
+    row: dict[str, Any],
+    components: list[str],
+    pattern_class: str,
+    score: int,
+    thresholds: dict[str, Any],
+    snapshot: dict[str, Any],
+) -> ExitDecision | None:
+    if not bool(getattr(cfg, "lock_after_peak", True)):
+        return None
+    if peak_pnl <= 0:
+        return None
+    n_clues, clue_names, hardish = _peak_lock_clues(
+        side, row, components, pattern_class, cfg
+    )
+    min_clues = int(getattr(cfg, "peak_lock_min_clues", 2) or 2)
+    thresholds["peak_lock_clues"] = clue_names
+    thresholds["peak_lock_count"] = n_clues
+    thresholds["peak_pnl"] = peak_pnl
+    snapshot["peak_lock_clues"] = clue_names
+    snapshot["peak_lock_count"] = n_clues
+    if n_clues < min_clues:
+        return None
+    reason = "trend_reversal" if hardish else "profit_protection"
+    snapshot["exit_reason"] = reason
+    return ExitDecision(
+        reason=reason,
+        state="reversal" if reason == "trend_reversal" else "weakening",
+        score=score,
+        components=components,
+        thresholds_used=thresholds,
+        snapshot=snapshot,
+    )
+
+
 def decide_exit(
     pos: Position,
     mark: float,
@@ -283,7 +379,23 @@ def decide_exit(
                 snapshot=snapshot,
             )
 
-    # Flat/loss: never trend_reversal — wait SL or limbo timeout
+    # Peak lock: ever green + soft clues → exit even if current net_est <= 0
+    # (overrides continuation_hold and the net>0 gate below)
+    peak_lock = _try_peak_lock(
+        peak_pnl=peak_pnl,
+        cfg=cfg,
+        side=pos.side,
+        row=row,
+        components=components,
+        pattern_class=pattern_class,
+        score=score,
+        thresholds=thresholds,
+        snapshot=snapshot,
+    )
+    if peak_lock is not None:
+        return peak_lock
+
+    # Flat/loss never-profit: wait SL or limbo timeout
     if require_net and net_est <= 0:
         if held >= limbo_max and not ever_net_profit:
             snapshot["exit_reason"] = "limbo_timeout"
@@ -298,7 +410,7 @@ def decide_exit(
         return _hold("weakening" if weakening else "hold")
 
     # --- In net profit ---
-    # Continuation forming → let it run (do not kill for thin profit)
+    # Continuation forming → let it run (peak-lock already handled above)
     if continuation_hold and pattern_class == "continuation":
         # Still protect if giveback is severe after real MFE
         if (
@@ -399,8 +511,8 @@ def maybe_log_exit_eval(
     last_log_ts[tid] = monotonic_now
     snap = decision.snapshot
     logger.info(
-        "EXIT_EVAL id=%s %s %s state=%s score=%s comps=%s class=%s mfe=%.3f%% giveback=%.2f "
-        "held=%.1fm since_ext=%.1fm net_est=%.4f reason=%s",
+        "EXIT_EVAL id=%s %s %s state=%s score=%s comps=%s class=%s peak_lock=%s "
+        "mfe=%.3f%% giveback=%.2f held=%.1fm since_ext=%.1fm net_est=%.4f peak_pnl=%.4f reason=%s",
         pos.id,
         _side_str(pos.side),
         pos.symbol,
@@ -408,10 +520,12 @@ def maybe_log_exit_eval(
         decision.score,
         decision.components,
         snap.get("exit_pattern_class"),
+        snap.get("peak_lock_clues"),
         float(snap.get("mfe_pct") or 0),
         float(snap.get("giveback_pct") or 0),
         float(snap.get("trade_duration_minutes") or 0),
         float(snap.get("minutes_since_last_favorable_extreme") or 0),
         float(snap.get("net_est") or 0),
+        float(snap.get("peak_pnl") or 0),
         decision.reason,
     )

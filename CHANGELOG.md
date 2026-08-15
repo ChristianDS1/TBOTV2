@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.22
+
+- Peak-profit lock: after `peak_pnl>0`, exit on ≥2 soft clues (MACD fade, RSI rollover/extreme, rejection, hard/chart reversal) even if current `net_est<=0`
+- Overrides `continuation_hold` so trades like #65 lock instead of riding giveback to SL
+- Never-profit path unchanged (limbo / SL)
+
 ## 0.1.21
 
 - Weekend paper **forex OTC** (`weekend_forex_otc`): Sat/Sun entries on all configured FX pairs with Pepperstone fees; crypto weekend entries kept

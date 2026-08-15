@@ -148,6 +148,11 @@ class ExitConfig(BaseModel):
     continuation_hold: bool = True
     # Soft floor for aggressive lock when pattern ambiguous (fraction of margin)
     min_lock_net_margin_pct: float = 0.15
+    # After peak_pnl>0: lock on soft momentum/reversal clues even if net_est<=0
+    lock_after_peak: bool = True
+    peak_lock_min_clues: int = 2
+    rsi_overbought: float = 70.0
+    rsi_oversold: float = 30.0
 
 
 class ExecutionConfig(BaseModel):

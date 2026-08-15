@@ -98,6 +98,11 @@ exit:
   limbo_flat_max_minutes: 10
   continuation_hold: true
   min_lock_net_margin_pct: 0.15
+  # After unrealized peak: lock on >=2 soft clues (MACD/RSI/rejection/hard pattern)
+  lock_after_peak: true
+  peak_lock_min_clues: 2
+  rsi_overbought: 70
+  rsi_oversold: 30
 
 learning:
   phase: discovery  # discovery | pattern | optimization | exploitation

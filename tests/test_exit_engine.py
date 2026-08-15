@@ -473,6 +473,7 @@ def test_limbo_timeout_never_profit(cfg):
 
 
 def test_continuation_holds_thin_profit(cfg):
+    """Continuation without enough peak-lock clues still holds thin green."""
     pos = Position(
         symbol="BTC/USDT",
         venue=Venue.CRYPTO,
@@ -488,13 +489,12 @@ def test_continuation_holds_thin_profit(cfg):
         features_json="{}",
     )
     row = {
-        **_reversal_row_long(),
-        "chart_reversal_bear": False,
+        **_weak_fade_long(),
         "htf_bias": "bull",
+        "rsi": 55,
+        "rsi_prev": 54,
         "active_patterns": [{"name": "flag_bull", "direction": "bullish"}],
     }
-    # Strip hard-reversal flags so classifier is continuation
-    row["rejection_bear"] = True  # fade present but continuation wins
     d = decide_exit(
         pos,
         100.5,
@@ -507,3 +507,162 @@ def test_continuation_holds_thin_profit(cfg):
     )
     assert d.reason is None
     assert d.snapshot.get("exit_pattern_class") == "continuation"
+
+
+def test_peak_lock_after_giveback_trade65_shape(cfg):
+    """Had peak profit, now red, hard/fade clues → lock (not wait for SL)."""
+    pos = Position(
+        symbol="ETH/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb",
+        qty=10,
+        entry_price=1884.82,
+        entry_mark=1884.63,
+        entry_time=datetime.now(timezone.utc) - timedelta(minutes=20),
+        status=TradeStatus.OPEN,
+        leverage=50,
+        notional=500,
+        features_json="{}",
+    )
+    feat: dict = {}
+    update_excursion_state(feat, pos, 1886.56)  # peak
+    assert feat["peak_pnl"] > 0
+    row = {
+        "rejection_bear": False,
+        "macd_fast_bear_cross": False,
+        "macd_fast_hist": 0.03,
+        "macd_fast_hist_prev": 0.035,
+        "macd_fast_hist_prev2": 0.04,
+        "rsi": 48,
+        "rsi_prev": 55,
+        "macd_slow_hist": -0.002,
+        "macd_slow_hist_prev": -0.001,
+        "chart_reversal_bear": True,
+        "htf_bias": "bull",
+    }
+    d = decide_exit(
+        pos,
+        1884.0,  # giveback / flat-red after peak
+        row,
+        feat,
+        cfg.exit,
+        fee_bps=0.35,
+        slip_bps=1.0,
+        min_hold_minutes=0,
+    )
+    assert d.reason == "trend_reversal"
+    assert d.snapshot.get("peak_lock_count", 0) >= 2
+
+
+def test_never_peak_fade_still_holds(cfg):
+    pos = Position(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb",
+        qty=10,
+        entry_price=100,
+        entry_mark=100,
+        entry_time=datetime.now(timezone.utc) - timedelta(minutes=5),
+        status=TradeStatus.OPEN,
+        leverage=20,
+        notional=200,
+        features_json="{}",
+    )
+    d = decide_exit(
+        pos,
+        99.5,
+        _reversal_row_long(),
+        {},
+        cfg.exit,
+        fee_bps=0.35,
+        slip_bps=1.0,
+        min_hold_minutes=0,
+    )
+    assert d.reason is None
+    assert float(d.snapshot.get("peak_pnl") or 0) <= 0
+
+
+def test_peak_lock_overrides_continuation(cfg):
+    pos = Position(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb",
+        qty=10,
+        entry_price=100,
+        entry_mark=100,
+        entry_time=datetime.now(timezone.utc) - timedelta(minutes=5),
+        status=TradeStatus.OPEN,
+        leverage=20,
+        notional=200,
+        features_json="{}",
+    )
+    feat: dict = {}
+    update_excursion_state(feat, pos, 101.2)
+    row = {
+        "rejection_bear": False,
+        "macd_fast_bear_cross": False,
+        "macd_fast_hist": 0.10,
+        "macd_fast_hist_prev": 0.15,
+        "macd_fast_hist_prev2": 0.20,
+        "rsi": 72,
+        "rsi_prev": 70,
+        "macd_slow_hist": 0.04,
+        "macd_slow_hist_prev": 0.08,
+        "chart_reversal_bear": False,
+        "htf_bias": "bull",
+        "active_patterns": [{"name": "flag_bull", "direction": "bullish"}],
+    }
+    d = decide_exit(
+        pos,
+        101.0,
+        row,
+        feat,
+        cfg.exit,
+        fee_bps=0.35,
+        slip_bps=1.0,
+        min_hold_minutes=0,
+    )
+    assert d.snapshot.get("exit_pattern_class") == "continuation"
+    assert d.reason in ("trend_reversal", "profit_protection")
+    assert d.snapshot.get("peak_lock_count", 0) >= 2
+
+
+def test_peak_lock_requires_min_clues(cfg):
+    pos = Position(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb",
+        qty=10,
+        entry_price=100,
+        entry_mark=100,
+        entry_time=datetime.now(timezone.utc) - timedelta(minutes=5),
+        status=TradeStatus.OPEN,
+        leverage=20,
+        notional=200,
+        features_json="{}",
+    )
+    feat: dict = {}
+    update_excursion_state(feat, pos, 101.0)
+    # Only RSI extreme — 1 clue
+    row = {
+        **_weak_fade_long(),
+        "rsi": 71,
+        "rsi_prev": 70,
+        "htf_bias": "bull",
+    }
+    d = decide_exit(
+        pos,
+        100.8,
+        row,
+        feat,
+        cfg.exit,
+        fee_bps=0.35,
+        slip_bps=1.0,
+        min_hold_minutes=0,
+    )
+    assert d.reason is None
+    assert d.snapshot.get("peak_lock_count") == 1
