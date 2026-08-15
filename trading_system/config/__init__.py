@@ -36,6 +36,9 @@ class StrategyConfig(BaseModel):
     min_conditions: int = 3
     # Forex majors move less — slightly softer entry (rejection candle still required)
     forex_min_conditions: int = 2
+    # Soft discovery: lower bars when phase=discovery (indicators still required)
+    discovery_min_conditions: int = 2
+    discovery_forex_min_conditions: int = 1
     require_rejection_candle: bool = True
     max_extreme_retrace_pct: float = 0.35
     forex_max_extreme_retrace_pct: float = 0.45
@@ -74,12 +77,12 @@ class SessionBucketConfig(BaseModel):
 
 class LearningConfig(BaseModel):
     phase: str = "discovery"
-    exploration_budget: float = 0.25
+    exploration_budget: float = 0.45  # soft discovery: try more
     min_sample_size: int = 20
     pattern_min_occurrences: int = 20
     win_confidence_boost: float = 8.0
     loss_confidence_penalty: float = 15.0
-    loss_soft_reject: bool = True
+    loss_soft_reject: bool = False  # soft discovery: don't starve exploration
     soft_reject_exclude_key_prefixes: list[str] = Field(
         default_factory=lambda: ["strategy=", "regime="]
     )
@@ -94,6 +97,12 @@ class LearningConfig(BaseModel):
             SessionBucketConfig(name="night", start_hour_utc=21.0, end_hour_utc=24.0),
         ]
     )
+    # Sat/Sun UTC → session=weekend (FX closed; crypto book)
+    weekend_session_enabled: bool = True
+    priority_boost: float = 25.0  # obligatory priority setups
+    priority_min_net_wr: float = 0.90
+    priority_min_n: int = 10
+    discovery_skip_hard_edge: bool = True  # outside priority: don't hard-reject on thin edge
     retrain_every_n_trades: int = 50
     recency_half_life_trades: int = 100
 

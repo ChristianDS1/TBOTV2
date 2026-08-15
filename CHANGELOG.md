@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.19
+
+- Paper live bridge: priority patterns (3 confirmations ∩ hist15) obligatory when indicators pass
+- Soft discovery outside priority (less hard-edge / soft-reject); promote to priority at ≥90% net WR
+- Session `weekend` (Sat–Sun UTC) for FX-closed / crypto book
+- `seed-hist15-learning`: seed pattern_evidence from hist15 wins + loss context + priority keys
+
 ## 0.1.18
 
 - `historical-pattern-validate`: OOS walk on hist15 successful `chart_pattern` whitelist (default 2026-07-20..22)

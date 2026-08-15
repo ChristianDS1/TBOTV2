@@ -16,6 +16,7 @@ from trading_system.execution import PaperExecutor
 from trading_system.execution.edge import assess_entry_edge
 from trading_system.features import build_features, latest_feature_dict
 from trading_system.learning import LearningEngine, daily_objective_progress
+from trading_system.learning.priority import ensure_priority_file, is_priority_setup
 from trading_system.models import WinProbabilityModel
 from trading_system.patterns import (
     combine_htf_votes,
@@ -47,6 +48,19 @@ class TradingEngine:
         self.executor = PaperExecutor(self.cfg, self.db, self.portfolio)
         self.learning = LearningEngine(self.cfg.learning, self.db)
         self.model = WinProbabilityModel(ROOT / "models" / "artifacts")
+        self._hist_model = None
+        hist_dir = ROOT / "models" / "hist15_clean"
+        if (hist_dir / "win_model.joblib").exists():
+            try:
+                from trading_system.ml.hist_model import HistoricalWinModel
+
+                hm = HistoricalWinModel(hist_dir)
+                if hm.load():
+                    self._hist_model = hm
+                    logger.info("loaded hist15 model from %s auc=%s", hist_dir, hm.auc)
+            except Exception as e:
+                logger.warning("hist15 model load failed: %s", e)
+        ensure_priority_file()
         self.strategies = StrategyRegistry()
 
         self.simulate = simulate
@@ -387,6 +401,16 @@ class TradingEngine:
                 signal.features["sl_mode"] = sl_mode
 
         # Soft fee-aware edge: BB uses mid; pattern/continuation use measure-rule (or skip gate)
+        chart = (
+            signal.features.get("chart_pattern")
+            or signal.features.get("setup")
+            or signal.strategy
+        )
+        priority = is_priority_setup(str(chart) if chart else None)
+        signal.features["priority_setup"] = bool(priority)
+        if chart and not signal.features.get("chart_pattern"):
+            signal.features["chart_pattern"] = str(chart)
+
         edge_tp = signal.take_profit
         proxy = "take_profit"
         if edge_tp is None:
@@ -413,7 +437,8 @@ class TradingEngine:
         signal.features["round_trip_cost_bps"] = edge.round_trip_cost_bps
         signal.features["edge_ratio"] = edge.ratio
         signal.features["edge_proxy"] = proxy
-        if edge.hard_reject:
+        soft_discovery = bool(getattr(self.cfg.learning, "discovery_skip_hard_edge", True))
+        if edge.hard_reject and not (soft_discovery and not priority):
             self.db.insert_rejected(
                 RejectedSignal(
                     symbol=symbol,
@@ -428,6 +453,8 @@ class TradingEngine:
                 )
             )
             return False
+        if edge.hard_reject and soft_discovery and not priority:
+            signal.features["discovery_edge_bypass"] = True
         if edge.soft_penalty:
             signal.confidence = max(
                 0.0,
@@ -435,12 +462,31 @@ class TradingEngine:
             )
             signal.features["thin_edge"] = True
 
-        p_win = self.model.predict_proba(signal.features, signal.confidence)
+        # Prefer hist15 model when available (pre-move feature space)
+        if self._hist_model is not None:
+            feats = dict(signal.features)
+            feats["strategy_family"] = signal.strategy
+            feats["side"] = signal.side.value
+            feats["confidence"] = float(signal.confidence)
+            p_win = float(self._hist_model.predict_proba(feats))
+        else:
+            p_win = self.model.predict_proba(signal.features, signal.confidence)
         signal.features["p_win"] = p_win
         signal.confidence = 0.7 * signal.confidence + 0.3 * (p_win * 100)
 
-        # Confirmed patterns: win=boost only; loss=penalty/soft-reject
-        signal, reject_reason = self.learning.apply_confidence_effects(signal)
+        if priority:
+            boost = float(getattr(self.cfg.learning, "priority_boost", 25.0) or 25.0)
+            signal.confidence = min(100.0, float(signal.confidence) + boost)
+            signal.features["pattern_boost"] = max(
+                float(signal.features.get("pattern_boost") or 0.0), boost
+            )
+            signal.features["priority_forced"] = True
+            # Obligatory: skip loss soft-reject for priority setups
+            signal = self.learning.tag_signal(signal)
+            reject_reason = None
+        else:
+            # Confirmed patterns: win=boost only; loss=penalty/soft-reject
+            signal, reject_reason = self.learning.apply_confidence_effects(signal)
         if reject_reason:
             self.db.insert_rejected(
                 RejectedSignal(
@@ -457,7 +503,8 @@ class TradingEngine:
             )
             return False
 
-        signal = self.learning.tag_signal(signal)
+        if not priority:
+            signal = self.learning.tag_signal(signal)
 
         decision = self.risk.approve(
             signal,
@@ -765,6 +812,17 @@ class TradingEngine:
             name=obj_cfg.name,
         )
         learning_payload["objective"] = objective
+        from trading_system.learning.priority import load_priority
+
+        try:
+            prio = load_priority()
+            learning_payload["priority_patterns"] = list(prio.get("names") or [])
+            learning_payload["hist_model"] = {
+                "loaded": self._hist_model is not None,
+                "auc": getattr(self._hist_model, "auc", None) if self._hist_model else None,
+            }
+        except Exception:
+            learning_payload["priority_patterns"] = []
         return {
             "snapshot": snap.model_dump(mode="json"),
             "open_trades": open_pos,
@@ -775,6 +833,7 @@ class TradingEngine:
             "model": {
                 "backend": self.model.backend,
                 "brier": self.model.brier,
+                "hist15_loaded": self._hist_model is not None,
             },
             "status": self.status_message,
             "kill_reason": self.risk.kill_reason,
@@ -789,6 +848,7 @@ class TradingEngine:
                 "wins": patterns_win[:10],
                 "losses": patterns_loss[:10],
                 "threshold": self.cfg.learning.pattern_min_occurrences,
+                "priority": learning_payload.get("priority_patterns") or [],
             },
         }
 

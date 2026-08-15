@@ -16,6 +16,8 @@ DEFAULT_SESSION_BUCKETS: list[SessionBucketConfig] = [
     SessionBucketConfig(name="night", start_hour_utc=21.0, end_hour_utc=24.0),
 ]
 
+WEEKEND_SESSION_NAME = "weekend"
+
 
 def _hour_utc(ts: datetime) -> float:
     if ts.tzinfo is None:
@@ -25,18 +27,35 @@ def _hour_utc(ts: datetime) -> float:
     return ts.hour + ts.minute / 60.0 + ts.second / 3600.0
 
 
+def is_weekend_utc(ts: datetime | None = None) -> bool:
+    """Saturday=5, Sunday=6 in UTC."""
+    now = ts or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+    return now.weekday() >= 5
+
+
 def session_bucket(
     ts: datetime | None = None,
     buckets: Sequence[SessionBucketConfig] | None = None,
+    *,
+    weekend_name: str = WEEKEND_SESSION_NAME,
 ) -> str:
     """
     Map a timestamp to a named UTC session bucket.
-    Buckets are [start, end); end=24 means until midnight.
+    Weekends (Sat/Sun UTC) map to `weekend` before hour buckets — FX closed, crypto-only book.
+    Weekday buckets are [start, end); end=24 means until midnight.
     """
     now = ts or datetime.now(timezone.utc)
+    if is_weekend_utc(now):
+        return weekend_name
     hour = _hour_utc(now)
     specs = list(buckets) if buckets else DEFAULT_SESSION_BUCKETS
     for b in specs:
+        if str(b.name).lower() == weekend_name.lower():
+            continue
         start = float(b.start_hour_utc)
         end = float(b.end_hour_utc)
         if end > start:
@@ -80,6 +99,23 @@ def session_info(
     else:
         now = now.astimezone(timezone.utc)
     name = session_bucket(now, specs)
+    if name == WEEKEND_SESSION_NAME:
+        return {
+            "name": WEEKEND_SESSION_NAME,
+            "hours": "Sat–Sun UTC (FX closed; crypto)",
+            "start_hour_utc": None,
+            "end_hour_utc": None,
+            "utc_now": now.strftime("%H:%M:%S"),
+            "weekday_utc": now.weekday(),
+            "buckets": [
+                {"name": WEEKEND_SESSION_NAME, "hours": "Sat–Sun UTC"},
+                *[
+                    {"name": b.name, "hours": session_hours_label(b)}
+                    for b in specs
+                    if b.name != WEEKEND_SESSION_NAME
+                ],
+            ],
+        }
     match = next((b for b in specs if b.name == name), None)
     hours = session_hours_label(match) if match else "—"
     return {
@@ -88,7 +124,15 @@ def session_info(
         "start_hour_utc": float(match.start_hour_utc) if match else None,
         "end_hour_utc": float(match.end_hour_utc) if match else None,
         "utc_now": now.strftime("%H:%M:%S"),
-        "buckets": [{"name": b.name, "hours": session_hours_label(b)} for b in specs],
+        "weekday_utc": now.weekday(),
+        "buckets": [
+            {"name": WEEKEND_SESSION_NAME, "hours": "Sat–Sun UTC"},
+            *[
+                {"name": b.name, "hours": session_hours_label(b)}
+                for b in specs
+                if b.name != WEEKEND_SESSION_NAME
+            ],
+        ],
     }
 
 

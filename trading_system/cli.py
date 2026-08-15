@@ -79,6 +79,16 @@ def main(argv: list[str] | None = None) -> None:
         help="Soft-gate after warmup (0=observe all; e.g. 0.35 to skip low p_win)",
     )
 
+    seed = sub.add_parser(
+        "seed-hist15-learning",
+        help="Seed pattern_evidence from hist15 wins/losses + priority patterns",
+    )
+    seed.add_argument(
+        "--examples",
+        default=None,
+        help="Path to hist15 examples.csv (default data/ml/hist15_clean/examples.csv)",
+    )
+
     val = sub.add_parser(
         "historical-pattern-validate",
         help="OOS walk on whitelisted hist15 patterns (no retrain, no live bridge)",
@@ -201,6 +211,12 @@ def main(argv: list[str] | None = None) -> None:
             ml_min_p_win=float(args.ml_min_p_win),
         )
         print(json.dumps(manifest, indent=2, default=str))
+
+    elif args.cmd == "seed-hist15-learning":
+        from trading_system.learning.seed_hist15 import seed_from_hist15
+
+        summary = seed_from_hist15(cfg, examples_csv=args.examples)
+        print(json.dumps(summary, indent=2, default=str))
 
     elif args.cmd == "historical-pattern-validate":
         from trading_system.ml.validate_patterns import run_pattern_validation

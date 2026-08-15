@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "source": "3_confirmations_intersect_hist15_successful",
+  "min_net_wr_promote": 0.9,
+  "min_n_promote": 10,
+  "names": [
+    "bb_mean_reversion",
+    "double_top",
+    "triangle_desc_down",
+    "triangle_sym_down",
+    "v_top"
+  ],
+  "patterns": [
+    {
+      "chart_pattern": "bb_mean_reversion",
+      "seed": true,
+      "note": "obligatory when indicators pass"
+    },
+    {
+      "chart_pattern": "double_top",
+      "seed": true,
+      "note": "obligatory when indicators pass"
+    },
+    {
+      "chart_pattern": "triangle_desc_down",
+      "seed": true,
+      "note": "obligatory when indicators pass"
+    },
+    {
+      "chart_pattern": "triangle_sym_down",
+      "seed": true,
+      "note": "obligatory when indicators pass"
+    },
+    {
+      "chart_pattern": "v_top",
+      "seed": true,
+      "note": "obligatory when indicators pass"
+    }
+  ],
+  "created_at": "2026-08-15T13:47:50.888283+00:00",
+  "updated_at": "2026-08-15T13:47:50.888291+00:00"
+}

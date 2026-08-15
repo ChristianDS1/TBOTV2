@@ -132,8 +132,9 @@ class Database:
         self._init()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, check_same_thread=False)
+        conn = sqlite3.connect(self.path, check_same_thread=False, timeout=60.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
     @contextmanager
@@ -455,6 +456,39 @@ class Database:
                 "status": status,
                 "just_confirmed": just_confirmed,
             }
+
+    def upsert_pattern_count(
+        self,
+        pattern_key: str,
+        direction: str,
+        count: int,
+        now_iso: str,
+        *,
+        status: str = "observing",
+    ) -> None:
+        """Set pattern evidence count in one write (seed / bulk)."""
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT pattern_key FROM pattern_evidence WHERE pattern_key=? AND direction=?",
+                (pattern_key, direction),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO pattern_evidence (pattern_key, direction, count, last_seen, status)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (pattern_key, direction, int(count), now_iso, status),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE pattern_evidence
+                    SET count=?, last_seen=?, status=?
+                    WHERE pattern_key=? AND direction=?
+                    """,
+                    (int(count), now_iso, status, pattern_key, direction),
+                )
 
     def confirm_pattern(
         self,

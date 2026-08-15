@@ -391,6 +391,49 @@ class LearningEngine:
                 f"Retrain trigger after {self.cfg.retrain_every_n_trades} closed trades",
                 {"phase": self.cfg.phase},
             )
+
+        # Promote high-gain chart patterns to obligatory priority list (>=90% net WR)
+        try:
+            from trading_system.learning.priority import promote_pattern
+
+            feats = _features_from_position(pos)
+            chart = feats.get("chart_pattern") or feats.get("setup") or pos.strategy
+            if chart:
+                chart_s = str(chart)
+                same = []
+                for t in closed:
+                    tf = _features_from_position(t)
+                    c = tf.get("chart_pattern") or tf.get("setup") or t.strategy
+                    if str(c) != chart_s:
+                        continue
+                    if self.cfg.session_aware and trade_session(t, self.cfg) != sess:
+                        continue
+                    same.append(t)
+                n = len(same)
+                wins = sum(1 for t in same if (t.pnl or 0) > 0)
+                wr = wins / n if n else 0.0
+                min_wr = float(getattr(self.cfg, "priority_min_net_wr", 0.90) or 0.90)
+                min_n = int(getattr(self.cfg, "priority_min_n", 10) or 10)
+                if n >= min_n and wr >= min_wr:
+                    if promote_pattern(
+                        chart_s, net_wr=wr, n=n, session=sess
+                    ):
+                        self.db.insert_insight(
+                            "priority_promote",
+                            f"Promoted {chart_s} to priority (net WR={wr:.0%} n={n} session={sess})",
+                            {"chart_pattern": chart_s, "net_wr": wr, "n": n, "session": sess},
+                        )
+                        newly_confirmed.append(
+                            {
+                                "pattern_key": f"priority:{chart_s}",
+                                "direction": "win",
+                                "count": n,
+                                "action": "priority_promote",
+                            }
+                        )
+        except Exception:
+            pass
+
         return newly_confirmed
 
     def _apply_confirmed_effect(

@@ -272,11 +272,23 @@ class BBMeanReversionStrategy(Strategy):
         call_n = sum(call_conds)
         put_n = sum(put_conds)
         is_fx = (venue.value if hasattr(venue, "value") else str(venue)).lower() == "forex"
-        min_n = (
-            int(getattr(cfg, "forex_min_conditions", cfg.min_conditions) or cfg.min_conditions)
-            if is_fx
-            else cfg.min_conditions
-        )
+        if bool(getattr(cfg, "discovery_phase", False)):
+            if is_fx:
+                min_n = int(
+                    getattr(cfg, "discovery_forex_min_conditions", None)
+                    or getattr(cfg, "forex_min_conditions", cfg.min_conditions)
+                    or 1
+                )
+            else:
+                min_n = int(
+                    getattr(cfg, "discovery_min_conditions", None) or cfg.min_conditions or 2
+                )
+        else:
+            min_n = (
+                int(getattr(cfg, "forex_min_conditions", cfg.min_conditions) or cfg.min_conditions)
+                if is_fx
+                else cfg.min_conditions
+            )
 
         # Soft filters reduce confidence rather than hard-block in discovery
         soft_penalty = 0.0
