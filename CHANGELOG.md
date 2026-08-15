@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.26
+
+- Cleanup: collapse redundant weekend branch in FX `get_ohlcv`; clarify OTC-off comments (crypto-only weekend)
+- Keep `_synthetic` / `SimulatedCrypto` only as fallbacks and offline tools; no PO leftovers
+
 ## 0.1.25
 
 - Rollback: removed Pocket Option / synthetic weekend FX chart feeds (`865c40c`, `e068238`)

@@ -68,17 +68,12 @@ class ForexAdapter(MarketAdapter):
     def get_ohlcv(
         self, symbol: str, timeframe: str = "1m", limit: int = 200
     ) -> pd.DataFrame:
-        from trading_system.learning.sessions import is_weekend_utc
-
         tf = timeframe or "1m"
         cache_key = f"{symbol}:{tf}"
         try:
             if tf in ("15s", "30s", "1s"):
                 raise ValueError(f"forex has no native {tf}")
-            # Weekends: no live FX tape — avoid synthetic unless caller needs marks
-            if is_weekend_utc() and self.provider == "yfinance" and tf == "1m":
-                df = self._fetch_yfinance(symbol, tf, limit)
-            elif self.provider == "yfinance":
+            if self.provider == "yfinance":
                 df = self._fetch_yfinance(symbol, tf, limit)
             else:
                 df = self._synthetic(symbol, limit, tf)
