@@ -81,13 +81,21 @@ def main(argv: list[str] | None = None) -> None:
 
     seed = sub.add_parser(
         "seed-hist15-learning",
-        help="Seed pattern_evidence from hist15 wins/losses + priority patterns",
+        help="Ensure priority patterns file (no pattern_evidence chart/session seed)",
     )
     seed.add_argument(
         "--examples",
         default=None,
-        help="Path to hist15 examples.csv (default data/ml/hist15_clean/examples.csv)",
+        help="Ignored (legacy); priority file only under keys policy v2",
     )
+
+    san = sub.add_parser(
+        "sanitize-pattern-keys",
+        help="Wipe non-allowlist pattern_evidence / applied_changes (keys policy v2)",
+    )
+    san.add_argument("--db", default=None, help="Optional path to trading.db")
+    san.add_argument("--dry-run", action="store_true")
+    san.add_argument("--yes", "-y", action="store_true")
 
     val = sub.add_parser(
         "historical-pattern-validate",
@@ -216,6 +224,23 @@ def main(argv: list[str] | None = None) -> None:
         from trading_system.learning.seed_hist15 import seed_from_hist15
 
         summary = seed_from_hist15(cfg, examples_csv=args.examples)
+        print(json.dumps(summary, indent=2, default=str))
+
+    elif args.cmd == "sanitize-pattern-keys":
+        from trading_system.database import Database
+        from trading_system.learning.sanitize import (
+            POLICY_FLAG,
+            sanitize_pattern_evidence,
+        )
+
+        path = args.db or str(cfg.db_path())
+        db = Database(path)
+        if not args.dry_run and not args.yes:
+            print("Refusing without --yes (or pass --dry-run).")
+            raise SystemExit(2)
+        summary = sanitize_pattern_evidence(db, dry_run=bool(args.dry_run))
+        if not args.dry_run:
+            db.set_state(POLICY_FLAG, "1")
         print(json.dumps(summary, indent=2, default=str))
 
     elif args.cmd == "historical-pattern-validate":

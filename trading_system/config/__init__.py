@@ -80,13 +80,12 @@ class LearningConfig(BaseModel):
     phase: str = "discovery"
     exploration_budget: float = 0.45  # soft discovery: try more
     min_sample_size: int = 20
-    pattern_min_occurrences: int = 20
+    pattern_min_occurrences: int = 10
     win_confidence_boost: float = 8.0
     loss_confidence_penalty: float = 15.0
-    loss_soft_reject: bool = False  # soft discovery: don't starve exploration
-    soft_reject_exclude_key_prefixes: list[str] = Field(
-        default_factory=lambda: ["strategy=", "regime="]
-    )
+    # Confirmed ENTRY losses hard-reject; flag kept for compatibility (always enforced)
+    loss_soft_reject: bool = True
+    soft_reject_exclude_key_prefixes: list[str] = Field(default_factory=list)
     # Pattern evidence and confidence effects scoped by UTC session buckets
     session_aware: bool = True
     session_buckets: list[SessionBucketConfig] = Field(

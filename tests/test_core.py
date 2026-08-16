@@ -252,6 +252,36 @@ def test_live_engine_blocked(cfg, tmp_path):
         TradingEngine(cfg, simulate=True)
 
 
+def _entry_feats(**extra) -> str:
+    import json
+
+    base = {
+        "rsi": 28.0,
+        "rsi_prev": 32.0,
+        "close": 100.0,
+        "bb_lower": 99.0,
+        "bb_mid": 100.5,
+        "bb_upper": 102.0,
+        "bb_width": 0.03,
+        "macd_fast_hist": 0.02,
+        "macd_fast_hist_prev": -0.01,
+        "macd_slow_hist": 0.01,
+        "macd_fast_bull_cross": True,
+        "macd_fast_bear_cross": False,
+        "rejection_bull": True,
+        "rejection_bear": False,
+        "htf_bias": "bear",
+        "ltf_turn": "turn_down",
+        "backing": "rsi,macd,rejection",
+        "edge_bps": 20.0,
+        "round_trip_cost_bps": 4.0,
+        "edge_ratio": 5.0,
+        "chart_pattern": "hs_top",
+    }
+    base.update(extra)
+    return json.dumps(base)
+
+
 def _closed_pos(
     *,
     pnl: float,
@@ -259,6 +289,7 @@ def _closed_pos(
     exit_reason: str = "time_stop",
     symbol: str = "BTC/USDT",
     confidence: float = 55,
+    features_json: str | None = None,
 ) -> Position:
     return Position(
         symbol=symbol,
@@ -275,14 +306,14 @@ def _closed_pos(
         confidence=confidence,
         regime=regime,
         exit_reason=exit_reason,
-        features_json="{}",
+        features_json=features_json if features_json is not None else _entry_feats(),
     )
 
 
-def test_pattern_not_confirmed_below_20(cfg, tmp_db):
-    cfg.learning.pattern_min_occurrences = 20
+def test_pattern_not_confirmed_below_10(cfg, tmp_db):
+    cfg.learning.pattern_min_occurrences = 10
     le = LearningEngine(cfg.learning, tmp_db)
-    for _ in range(19):
+    for _ in range(9):
         pos = _closed_pos(pnl=-0.5)
         pos.id = tmp_db.insert_trade(pos)
         newly = le.on_trade_closed(pos)
@@ -290,28 +321,32 @@ def test_pattern_not_confirmed_below_20(cfg, tmp_db):
     patterns = tmp_db.get_patterns(direction="loss", status="confirmed")
     assert patterns == []
     observing = tmp_db.get_patterns(direction="loss", status="observing")
-    assert any(
-        p["pattern_key"].endswith("regime=high_vol") and p["count"] == 19 for p in observing
+    assert any(p["pattern_key"].startswith("rsi_zone=") and p["count"] == 9 for p in observing)
+    assert not any(
+        p["pattern_key"].startswith("session=")
+        or p["pattern_key"].startswith("symbol=")
+        or p["pattern_key"].startswith("chart=")
+        for p in observing
     )
 
 
-def test_win_pattern_confirms_at_20_boost_only(cfg, tmp_db):
-    cfg.learning.pattern_min_occurrences = 20
+def test_win_pattern_confirms_at_10_boost_only(cfg, tmp_db):
+    cfg.learning.pattern_min_occurrences = 10
     cfg.learning.win_confidence_boost = 8.0
     le = LearningEngine(cfg.learning, tmp_db)
-    for i in range(20):
+    for i in range(10):
         pos = _closed_pos(pnl=0.5, regime="ranging")
         pos.id = tmp_db.insert_trade(pos)
         newly = le.on_trade_closed(pos)
-        if i < 19:
+        if i < 9:
             assert newly == []
         else:
             assert any(n["direction"] == "win" for n in newly)
     confirmed = tmp_db.get_patterns(direction="win", status="confirmed")
-    assert any(p["pattern_key"].endswith("regime=ranging") for p in confirmed)
+    assert any(p["pattern_key"].startswith("rsi_zone=") for p in confirmed)
+    assert not any(p["pattern_key"].startswith("session=") for p in confirmed)
     changes = tmp_db.applied_changes_on_day(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     assert any(c["action"] == "confidence_boost" for c in changes)
-    assert all(c["action"] != "rewrite_strategy" for c in changes)
 
     sig = Signal(
         symbol="BTC/USDT",
@@ -321,6 +356,25 @@ def test_win_pattern_confirms_at_20_boost_only(cfg, tmp_db):
         confidence=50,
         reason="test",
         regime=MarketRegime.RANGING,
+        features={
+            "rsi": 28.0,
+            "rsi_prev": 32.0,
+            "close": 100.0,
+            "bb_lower": 99.0,
+            "bb_mid": 100.5,
+            "bb_upper": 102.0,
+            "bb_width": 0.03,
+            "macd_fast_hist": 0.02,
+            "macd_fast_hist_prev": -0.01,
+            "macd_slow_hist": 0.01,
+            "rejection_bull": True,
+            "htf_bias": "bear",
+            "ltf_turn": "turn_down",
+            "backing": "rsi,macd,rejection",
+            "edge_bps": 20.0,
+            "round_trip_cost_bps": 4.0,
+            "edge_ratio": 5.0,
+        },
         timestamp=datetime.now(timezone.utc),
     )
     adjusted, reject = le.apply_confidence_effects(sig)
@@ -328,28 +382,48 @@ def test_win_pattern_confirms_at_20_boost_only(cfg, tmp_db):
     assert adjusted.confidence == pytest.approx(58.0)
 
 
-def test_loss_pattern_soft_reject_at_20(cfg, tmp_db):
-    cfg.learning.pattern_min_occurrences = 20
-    cfg.learning.loss_soft_reject = True
+def test_loss_pattern_hard_reject_at_10(cfg, tmp_db):
+    cfg.learning.pattern_min_occurrences = 10
     le = LearningEngine(cfg.learning, tmp_db)
-    for _ in range(20):
+    for _ in range(10):
         pos = _closed_pos(pnl=-0.4, regime="breakout", symbol="ETH/USDT")
         pos.id = tmp_db.insert_trade(pos)
         le.on_trade_closed(pos)
+    changes = tmp_db.applied_changes_on_day(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    assert any(c["action"] == "hard_reject" for c in changes)
     sig = Signal(
         symbol="ETH/USDT",
         venue=Venue.CRYPTO,
-        side=Side.PUT,
+        side=Side.CALL,
         strategy="bb_mean_reversion",
         confidence=70,
         reason="test",
         regime=MarketRegime.BREAKOUT,
+        features={
+            "rsi": 28.0,
+            "rsi_prev": 32.0,
+            "close": 100.0,
+            "bb_lower": 99.0,
+            "bb_mid": 100.5,
+            "bb_upper": 102.0,
+            "bb_width": 0.03,
+            "macd_fast_hist": 0.02,
+            "macd_fast_hist_prev": -0.01,
+            "macd_slow_hist": 0.01,
+            "rejection_bull": True,
+            "htf_bias": "bear",
+            "ltf_turn": "turn_down",
+            "backing": "rsi,macd,rejection",
+            "edge_bps": 20.0,
+            "round_trip_cost_bps": 4.0,
+            "edge_ratio": 5.0,
+        },
         timestamp=datetime.now(timezone.utc),
     )
     adjusted, reject = le.apply_confidence_effects(sig)
     assert reject is not None
     assert "confirmed_loss_pattern" in reject
-    assert adjusted.confidence < 70
+    assert adjusted.confidence == pytest.approx(70.0)  # no penalty path; reject only
 
 
 def test_capital_auto_refill(cfg, tmp_db):
@@ -470,9 +544,9 @@ def test_daily_report_session_breakdown(cfg, tmp_db, tmp_path):
 def test_report_shows_accept_reject_reasons(cfg, tmp_db, tmp_path):
     from trading_system.reports import write_daily_report
 
-    cfg.learning.pattern_min_occurrences = 20
+    cfg.learning.pattern_min_occurrences = 10
     le = LearningEngine(cfg.learning, tmp_db)
-    for _ in range(20):
+    for _ in range(10):
         pos = _closed_pos(pnl=-0.3, regime="high_vol")
         pos.id = tmp_db.insert_trade(pos)
         le.on_trade_closed(pos)
@@ -485,10 +559,8 @@ def test_report_shows_accept_reject_reasons(cfg, tmp_db, tmp_path):
     path = write_daily_report(db=tmp_db, learning=le, out_dir=tmp_path, day=day)
     text = path.read_text(encoding="utf-8")
     assert "ACEPTADO" in text
-    assert "NO ACEPTADO" in text
-    assert "Repeticiones al confirmar: **20**" in text
-    assert "regime=high_vol" in text
-    assert "solo esta condición contextual" in text or "solo esa key" in text or "NO invalida los 5" in text
+    assert "Repeticiones al confirmar: **10**" in text or "≥ umbral 10" in text or "umbral 10" in text
+    assert "rsi_zone=" in text or "hard_reject" in text or "confidence_boost" in text
 
 
 def test_take_profit_negative_net_is_strategy_win_not_loss(cfg, tmp_db):
@@ -507,8 +579,9 @@ def test_take_profit_negative_net_is_strategy_win_not_loss(cfg, tmp_db):
     wins = tmp_db.get_patterns(direction="win")
     losses = tmp_db.get_patterns(direction="loss")
     costs = tmp_db.get_patterns(direction="cost_erosion")
-    assert any(p["pattern_key"].endswith("exit_reason=take_profit") for p in wins)
-    assert not any(p["pattern_key"].endswith("exit_reason=take_profit") for p in losses)
+    assert any(p["pattern_key"].startswith("rsi_zone=") for p in wins)
+    assert not any(p["pattern_key"].startswith("exit_reason=") for p in wins)
+    assert not any(p["pattern_key"].startswith("exit_reason=") for p in losses)
     assert any("cost_erosion" in p["pattern_key"] for p in costs)
 
 
@@ -556,7 +629,7 @@ def test_rebuild_reclassifies_legacy_take_profit(cfg, tmp_db):
     pos.fees = 0.01
     pos.id = tmp_db.insert_trade(pos)
 
-    # Wrong historical classification as loss
+    # Wrong historical classification as loss (forbidden key — wiped on rebuild replay)
     tmp_db.increment_pattern("exit_reason=take_profit", "loss", datetime.now(timezone.utc).isoformat())
 
     summary = rebuild_patterns(tmp_db, cfg.learning, quiet=True)
@@ -570,8 +643,8 @@ def test_rebuild_reclassifies_legacy_take_profit(cfg, tmp_db):
     wins = tmp_db.get_patterns(direction="win")
     losses = tmp_db.get_patterns(direction="loss")
     costs = tmp_db.get_patterns(direction="cost_erosion")
-    assert any(p["pattern_key"].endswith("exit_reason=take_profit") for p in wins)
-    assert not any(p["pattern_key"].endswith("exit_reason=take_profit") for p in losses)
+    assert any(p["pattern_key"].startswith("rsi_zone=") for p in wins)
+    assert not any("exit_reason=take_profit" in p["pattern_key"] for p in wins + losses)
     assert len(costs) >= 1
 
 
@@ -1149,86 +1222,33 @@ def test_learning_display_labels():
     assert "perdida" in d2["learning_label"]
 
 
-def test_strategy_loss_pattern_does_not_soft_reject(cfg, tmp_db):
-    from trading_system.learning.sessions import session_bucket
-
-    cfg.learning.loss_soft_reject = True
-    cfg.learning.soft_reject_exclude_key_prefixes = ["strategy=", "regime="]
-    cfg.learning.session_aware = True
+def test_legacy_forbidden_keys_do_not_affect_entry(cfg, tmp_db):
+    """session/strategy/symbol confirmed losses must not hard-reject (not allowlisted)."""
     le = LearningEngine(cfg.learning, tmp_db)
-    sess = session_bucket(datetime.now(timezone.utc), cfg.learning.session_buckets)
     now = datetime.now(timezone.utc).isoformat()
-    strat_key = f"session={sess}|strategy=bb_mean_reversion"
-    regime_key = f"session={sess}|regime=breakout"
-    symbol_key = f"session={sess}|symbol=ETH/USDT"
-    for _ in range(20):
-        tmp_db.increment_pattern(strat_key, "loss", now)
-    tmp_db.confirm_pattern(
-        strat_key,
-        "loss",
-        confirmed_count=20,
-        decision_reason="test",
-        effect_action="soft_reject",
-    )
-    for _ in range(20):
-        tmp_db.increment_pattern(regime_key, "loss", now)
-    tmp_db.confirm_pattern(
-        regime_key,
-        "loss",
-        confirmed_count=20,
-        decision_reason="test",
-        effect_action="soft_reject",
-    )
-    for _ in range(20):
-        tmp_db.increment_pattern(symbol_key, "loss", now)
-    tmp_db.confirm_pattern(
-        symbol_key,
-        "loss",
-        confirmed_count=20,
-        decision_reason="test",
-        effect_action="soft_reject",
-    )
-
-    sig_ok = Signal(
-        symbol="BTC/USDT",
+    for key in (
+        "session=weekend",
+        "session=weekend|strategy=bb_mean_reversion",
+        "session=weekend|symbol=ETH/USDT",
+        "chart=hs_top",
+    ):
+        for _ in range(10):
+            tmp_db.increment_pattern(key, "loss", now)
+        tmp_db.confirm_pattern(
+            key, "loss", confirmed_count=10, decision_reason="legacy", effect_action="hard_reject"
+        )
+    sig = Signal(
+        symbol="ETH/USDT",
         venue=Venue.CRYPTO,
         side=Side.CALL,
         strategy="bb_mean_reversion",
         confidence=70,
         reason="test",
+        features={"rsi": 28.0, "chart_pattern": "hs_top"},
         timestamp=datetime.now(timezone.utc),
-        regime=MarketRegime.RANGING,
     )
-    adjusted, reject = le.apply_confidence_effects(sig_ok)
-    assert reject is None  # strategy= excluded even with session prefix
-    assert adjusted.confidence < 70  # penalty may still apply
-
-    sig_regime = Signal(
-        symbol="BTC/USDT",
-        venue=Venue.CRYPTO,
-        side=Side.PUT,
-        strategy="bb_mean_reversion",
-        confidence=70,
-        reason="test",
-        timestamp=datetime.now(timezone.utc),
-        regime=MarketRegime.BREAKOUT,
-    )
-    _, reject_regime = le.apply_confidence_effects(sig_regime)
-    assert reject_regime is None  # regime= too broad to hard-reject
-
-    sig_bad = Signal(
-        symbol="ETH/USDT",
-        venue=Venue.CRYPTO,
-        side=Side.PUT,
-        strategy="bb_mean_reversion",
-        confidence=70,
-        reason="test",
-        timestamp=datetime.now(timezone.utc),
-        regime=MarketRegime.RANGING,
-    )
-    _, reject2 = le.apply_confidence_effects(sig_bad)
-    assert reject2 is not None
-    assert "symbol=ETH/USDT" in reject2
+    _, reject = le.apply_confidence_effects(sig)
+    assert reject is None
 
 
 def test_session_bucket_mapping():
@@ -1249,12 +1269,31 @@ def test_session_bucket_mapping():
     assert session_bucket(datetime(2026, 8, 12, 22, 0, tzinfo=timezone.utc), buckets) == "night"
 
 
-def test_session_patterns_do_not_cross_bleed(cfg, tmp_db):
-    """Night confirmed loss must not soft-reject a europe entry."""
-    from trading_system.learning.sessions import session_bucket
+def test_exit_confirmed_key_does_not_reject_entry(cfg, tmp_db):
+    le = LearningEngine(cfg.learning, tmp_db)
+    now = datetime.now(timezone.utc).isoformat()
+    key = "exit_class=hard_reversal"
+    for _ in range(10):
+        tmp_db.increment_pattern(key, "loss", now)
+    tmp_db.confirm_pattern(
+        key, "loss", confirmed_count=10, decision_reason="exit", effect_action="exit_insight_only"
+    )
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bulkowski_pattern",
+        confidence=70,
+        reason="test",
+        features={"rsi": 28.0, "exit_pattern_class": "hard_reversal"},
+        timestamp=datetime.now(timezone.utc),
+    )
+    _, reject = le.apply_confidence_effects(sig)
+    assert reject is None
 
-    cfg.learning.session_aware = True
-    cfg.learning.loss_soft_reject = True
+
+def test_session_patterns_do_not_cross_bleed(cfg, tmp_db):
+    """Legacy session= keys never affect entry under keys policy v2."""
     le = LearningEngine(cfg.learning, tmp_db)
     now = datetime.now(timezone.utc).isoformat()
     night_key = "session=night|regime=breakout"
@@ -1263,10 +1302,7 @@ def test_session_patterns_do_not_cross_bleed(cfg, tmp_db):
     tmp_db.confirm_pattern(
         night_key, "loss", confirmed_count=20, decision_reason="test", effect_action="soft_reject"
     )
-
-    # Force europe timestamp
     europe_ts = datetime(2026, 8, 12, 9, 30, tzinfo=timezone.utc)
-    assert session_bucket(europe_ts, cfg.learning.session_buckets) == "europe"
     sig = Signal(
         symbol="ETH/USDT",
         venue=Venue.CRYPTO,
@@ -1286,7 +1322,8 @@ def test_objective_config_and_daily_progress(cfg):
 
     assert cfg.objective.daily_equity_gain_pct == 50.0
     assert cfg.objective.chase_target_in_discovery is False
-    assert "regime=" in cfg.learning.soft_reject_exclude_key_prefixes
+    assert cfg.learning.pattern_min_occurrences == 10
+    assert cfg.learning.soft_reject_exclude_key_prefixes == []
     prog = daily_objective_progress(
         start_equity=100.0,
         current_equity=110.0,
@@ -1460,7 +1497,7 @@ def test_htf_votes_and_bb_blocks_fade_into_trend(cfg):
         return
 
 
-def test_signal_keys_include_htf_and_chart(cfg):
+def test_signal_keys_entry_buckets_not_chart(cfg):
     from trading_system.learning import signal_pattern_keys
 
     sig = Signal(
@@ -1470,12 +1507,31 @@ def test_signal_keys_include_htf_and_chart(cfg):
         strategy="bb_mean_reversion",
         confidence=70,
         reason="test",
-        features={"htf_bias": "bear", "chart_pattern": "double_top"},
+        features={
+            "rsi": 72.0,
+            "rsi_prev": 68.0,
+            "htf_bias": "bear",
+            "ltf_turn": "turn_down",
+            "chart_pattern": "double_top",
+            "close": 100.0,
+            "bb_lower": 98.0,
+            "bb_mid": 100.0,
+            "bb_upper": 102.0,
+            "bb_width": 0.04,
+            "macd_fast_hist": -0.01,
+            "macd_slow_hist": -0.02,
+            "edge_bps": 10.0,
+            "round_trip_cost_bps": 4.0,
+            "edge_ratio": 2.5,
+        },
         timestamp=datetime.now(timezone.utc),
     )
     keys = signal_pattern_keys(sig, cfg.learning)
-    assert any(k.endswith("htf=bear") or k == "htf=bear" for k in keys)
-    assert any("chart=double_top" in k for k in keys)
+    assert any(k.startswith("htf_ltf_combo=") for k in keys)
+    assert any(k.startswith("rsi_zone=") for k in keys)
+    assert not any("chart=" in k for k in keys)
+    assert not any(k.startswith("session=") for k in keys)
+    assert not any(k.startswith("symbol=") for k in keys)
 
 
 def test_bulkowski_pattern_enters_when_htf_agrees(cfg):
@@ -1519,3 +1575,80 @@ def test_bulkowski_pattern_enters_when_htf_agrees(cfg):
     )
     assert blocked is None
 
+
+
+def test_weekend_hs_close_increments_buckets_not_coarse(cfg, tmp_db):
+    """Acceptance: weekend H&S close increments buckets, not session/symbol/chart."""
+    from trading_system.learning import pattern_keys_from_trade
+
+    le = LearningEngine(cfg.learning, tmp_db)
+    pos = _closed_pos(
+        pnl=-0.2,
+        symbol="BTC/USDT",
+        exit_reason="trend_reversal",
+        features_json=_entry_feats(
+            chart_pattern="hs_top",
+            exit_pattern_class="hard_reversal",
+            mfe_pct=0.2,
+            mae_pct=-0.1,
+            giveback_pct=0.4,
+        ),
+    )
+    pos.entry_time = datetime(2026, 8, 15, 14, 0, tzinfo=timezone.utc)  # Sat
+    pos.exit_time = datetime(2026, 8, 15, 14, 12, tzinfo=timezone.utc)
+    pos.id = tmp_db.insert_trade(pos)
+    keys = pattern_keys_from_trade(pos, cfg.learning)
+    assert any(k.startswith("rsi_zone=") for k in keys)
+    assert any(k.startswith("bb_pos=") for k in keys)
+    assert any("rsi_zone=" in k and "bb_pos=" in k for k in keys)
+    assert not any(k.startswith("session=") for k in keys)
+    assert not any(k.startswith("symbol=") for k in keys)
+    assert not any(k.startswith("chart=") for k in keys)
+    le.on_trade_closed(pos)
+    evidence = tmp_db.get_patterns()
+    keys_db = {p["pattern_key"] for p in evidence}
+    assert any(k.startswith("rsi_zone=") for k in keys_db)
+    assert "session=weekend" not in keys_db
+    assert "symbol=BTC/USDT" not in keys_db
+    assert "chart=hs_top" not in keys_db
+    assert not any(k.startswith("chart=") for k in keys_db)
+
+
+def test_uneconomic_skips_entry_win_loss(cfg, tmp_db):
+    le = LearningEngine(cfg.learning, tmp_db, edge_multiple=0.5)
+    pos = _closed_pos(
+        pnl=-0.2,
+        features_json=_entry_feats(
+            edge_bps=1.0,
+            round_trip_cost_bps=10.0,
+            edge_ratio=0.1,
+            exit_pattern_class="ambiguous",
+            mfe_pct=0.05,
+        ),
+    )
+    pos.id = tmp_db.insert_trade(pos)
+    le.on_trade_closed(pos)
+    evidence = tmp_db.get_patterns()
+    entry_like = [
+        p for p in evidence if p["pattern_key"].startswith("rsi_zone=") and p["direction"] in ("win", "loss")
+    ]
+    assert entry_like == []
+    # EXIT diagnostics may still increment
+    assert any(p["pattern_key"].startswith("exit_class=") for p in evidence)
+
+
+def test_sanitize_wipes_legacy_keeps_allowlist(cfg, tmp_db):
+    from trading_system.learning.sanitize import sanitize_pattern_evidence
+
+    now = datetime.now(timezone.utc).isoformat()
+    tmp_db.increment_pattern("session=weekend", "loss", now)
+    tmp_db.increment_pattern("chart=hs_top", "win", now)
+    tmp_db.increment_pattern("rsi_zone=lt30", "loss", now)
+    tmp_db.increment_pattern("cost_erosion|exit=x|symbol=BTC/USDT", "cost_erosion", now)
+    summary = sanitize_pattern_evidence(tmp_db, dry_run=False)
+    assert summary["dropped_evidence"] >= 2
+    left = {p["pattern_key"] for p in tmp_db.get_patterns()}
+    assert "rsi_zone=lt30" in left
+    assert "session=weekend" not in left
+    assert "chart=hs_top" not in left
+    assert any(k.startswith("cost_erosion") for k in left)

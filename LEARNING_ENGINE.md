@@ -2,83 +2,50 @@
 
 ## Objective
 
-North star: **maximize net equity**. Discovery learns which indicator/context setups win; exploitation should apply those toward **+50% equity per UTC day**. Config: `objective.daily_equity_gain_pct` (default 50). Discovery does **not** size or leverage to chase the daily target (`chase_target_in_discovery: false`).
+North star: **maximize net equity**. Discovery learns which **indicator bucket** setups win; exploitation applies those toward **+50% equity per UTC day**. Config: `objective.daily_equity_gain_pct` (default 50).
 
-## Phases
+## Allowlisted keys (policy v2)
 
-discovery → pattern → optimization → exploitation (suggested by trade count; config sets starting phase).
+Learning **never** increments or applies confidence effects on:
 
-## Session-aware patterns (UTC)
+- bare `session=*`, `symbol=*`, `chart=*` / Bulkowski names, bare `strategy=*`, `confidence_bucket=*`, bare `exit_reason=*`
+- raw floats (rsi values, prices, trade_id, p_win, …)
 
-Pattern evidence is scoped by time-of-day bucket so night results do not contaminate morning (and vice versa).
+### ENTRY track (win/loss → confidence boost / **hard-reject**)
 
-Default buckets (UTC):
+Bucket dims only, e.g. `rsi_zone`, `rsi_slope`, `rsi_vs_side`, `bb_pos`, `bb_width_bin`, `macd_*`, `rejection`, `htf_ltf_combo`, `backing_quality`, `edge_ratio_bin`, plus priority compounds `rsi_zone|bb_pos`, `rsi_vs_side|macd_fast_vs_slow`.
 
-| Session | Hours |
-|---|---|
-| `asia` | 00–07 |
-| `europe` | 07–12 |
-| `us_open` | 12–16 |
-| `us_afternoon` | 16–21 |
-| `night` | 21–24 |
+Uneconomic edge (`edge_bps < hard_min_edge_multiple × round_trip_cost_bps`): **no ENTRY win/loss count** (cost track / EXIT diagnostics only).
 
-Keys look like `session=europe|regime=low_vol`. Confirmed effects (boost / soft-reject) apply **only** in the matching session. Changing session = re-observe until that session reaches ≥20 again; other sessions keep their own memory.
+### EXIT track (insight only — never bans entries)
 
-Disable with `learning.session_aware: false`.
+`exit_class`, `mfe_bin`, `mae_bin`, `giveback_bin`, `hold_min_bin`, compound `exit_class|mfe_bin`.
 
-## Pattern evidence (≥20)
+### Cost erosion
 
-- Every closed trade increments counters for keys: `regime`, `symbol`, `exit_reason`, `confidence_bucket`, `strategy`, and `regime|exit` (each prefixed with `session=…` when session-aware).
-- **Win and loss** both require `pattern_min_occurrences` (default **20**) before confirmation.
-- Below 20: observation only — no hypothesis action, no confidence effect.
+Unchanged: insight-only when strategy win but net ≤ 0. Does **not** ban entries.
 
-### Confirmed win pattern
+## Confirmation
 
-- Effect: **confidence boost only** (`win_confidence_boost`, default +8).
-- Does **not** modify entry rules / strategy / the pattern itself.
-- Scope: **only the matching contextual key** (e.g. `session=europe|regime=ranging`), not the full 5-indicator entry checklist.
+- Threshold: `pattern_min_occurrences` (default **10**).
+- Confirmed **ENTRY win**: confidence boost only.
+- Confirmed **ENTRY loss**: **hard-reject** matching signals (including priority setups).
+- Bot may still *enter* via H&S etc.; learning does **not** treat chart/symbol/session as winner/loser.
 
-### Confirmed loss pattern
+## Session display
 
-- Effect: confidence penalty and optional **soft-reject** (`loss_soft_reject`).
-- Base strategy unchanged.
-- Scope: **only that key** — does **not** treat BB+RSI+MACD+rejection as all wrong.
-- Bare `session=…`, `…|strategy=…`, and `…|regime=…` keys are excluded from soft-reject (too broad — would halt a whole session or book). Symbol-level keys can still soft-reject.
+UTC session buckets remain for **insights / reports / priority promote** display. They are **not** pattern_evidence effect keys.
 
-### Strategy vs costs
+## Deploy cleanup
 
-Pattern win/loss uses **strategy outcome**:
+On first bot start (or `python -m trading_system sanitize-pattern-keys --yes`), wipe non-allowlist `pattern_evidence` + matching `applied_changes`. Trades history kept. Flag: `system_state.pattern_keys_policy_v2`.
 
-1. `exit_reason == take_profit` → strategy **win**
-2. else `gross_pnl > 0` → strategy **win**
-3. else strategy **loss**
-
-If strategy win but **net PnL ≤ 0** (fees/slippage): counted as **cost_erosion**, not as a strategy loss. Confirmed cost patterns are insight-only (no confidence penalty on entry rules).
-
+`seed-hist15-learning` only ensures the priority JSON — it does **not** seed chart/session evidence.
 
 ## Daily report (UTC rollover)
 
-Auto-generated at day change into `reports/daily/daily_YYYY-MM-DD.md`:
-
-1. Aprendizaje del día  
-2. Errores identificados (loss patterns)  
-3. Oportunidades (win patterns)  
-4. Cambios implementados  
-5. Progreso del aprendizaje  
-
-Manual: `python -m trading_system report` or `POST /api/report`.
-
-## Reset loss learning (both PCs)
-
-Stop the bot, then:
-
-```bash
-python -m trading_system reset-loss-learning --dry-run
-python -m trading_system reset-loss-learning --yes
-```
-
-Deletes `time_stop` trades and all loss/cost_erosion pattern rows. Keeps win patterns except keys that contain `time_stop`. Does **not** replay remaining trades into loss counters.
+Unchanged sections into `reports/daily/daily_YYYY-MM-DD.md`. Manual: `python -m trading_system report`.
 
 ## Exploration / ranking / ML
 
-Unchanged: exploration budget, strategy ranking with sample-size uncertainty, `P(win|features)` retrain path.
+Exploration budget, strategy ranking, `P(win|features)` retrain path unchanged.

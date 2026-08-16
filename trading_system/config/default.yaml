@@ -108,15 +108,11 @@ learning:
   phase: discovery  # discovery | pattern | optimization | exploitation
   exploration_budget: 0.45
   min_sample_size: 20
-  pattern_min_occurrences: 20  # win AND loss — no confirm below this
-  win_confidence_boost: 8.0     # only effect for confirmed win patterns
-  loss_confidence_penalty: 15.0
-  loss_soft_reject: false       # soft discovery: allow exploration
-  # Keys starting with these NEVER soft-reject (too broad — would halt the whole strategy).
-  # Rollback: set to [] to restore old behavior that rejected on strategy=...
-  soft_reject_exclude_key_prefixes:
-    - "strategy="
-    - "regime="  # session|regime is too broad (would halt the whole book)
+  pattern_min_occurrences: 10  # win AND loss — confirm at >=10
+  win_confidence_boost: 8.0     # only effect for confirmed win ENTRY keys
+  loss_confidence_penalty: 15.0  # unused for ENTRY losses (hard-reject instead)
+  loss_soft_reject: true        # confirmed ENTRY losses hard-reject matching signals
+  soft_reject_exclude_key_prefixes: []  # legacy; allowlisted keys only
   # Session-aware learning: patterns confirm/apply per UTC time bucket (no cross-session bleed)
   session_aware: true
   weekend_session_enabled: true  # Sat/Sun UTC → session=weekend

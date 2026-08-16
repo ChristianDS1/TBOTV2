@@ -46,7 +46,17 @@ class TradingEngine:
         self.portfolio = Portfolio(self.db, self.cfg.capital.initial)
         self.risk = RiskManager(self.cfg)
         self.executor = PaperExecutor(self.cfg, self.db, self.portfolio)
-        self.learning = LearningEngine(self.cfg.learning, self.db)
+        self.learning = LearningEngine(
+            self.cfg.learning,
+            self.db,
+            edge_multiple=float(self.cfg.execution.hard_min_edge_multiple),
+        )
+        try:
+            from trading_system.learning.sanitize import ensure_pattern_keys_policy
+
+            ensure_pattern_keys_policy(self.db)
+        except Exception as e:
+            logger.warning("pattern keys sanitize skipped: %s", e)
         self.model = WinProbabilityModel(ROOT / "models" / "artifacts")
         self._hist_model = None
         hist_dir = ROOT / "models" / "hist15_clean"
@@ -509,6 +519,8 @@ class TradingEngine:
         signal.features["p_win"] = p_win
         signal.confidence = 0.7 * signal.confidence + 0.3 * (p_win * 100)
 
+        # Confirmed ENTRY patterns: win=boost; loss=hard-reject (also for priority setups)
+        signal, reject_reason = self.learning.apply_confidence_effects(signal)
         if priority:
             boost = float(getattr(self.cfg.learning, "priority_boost", 25.0) or 25.0)
             signal.confidence = min(100.0, float(signal.confidence) + boost)
@@ -516,12 +528,6 @@ class TradingEngine:
                 float(signal.features.get("pattern_boost") or 0.0), boost
             )
             signal.features["priority_forced"] = True
-            # Obligatory: skip loss soft-reject for priority setups
-            signal = self.learning.tag_signal(signal)
-            reject_reason = None
-        else:
-            # Confirmed patterns: win=boost only; loss=penalty/soft-reject
-            signal, reject_reason = self.learning.apply_confidence_effects(signal)
         if reject_reason:
             self.db.insert_rejected(
                 RejectedSignal(
@@ -538,8 +544,7 @@ class TradingEngine:
             )
             return False
 
-        if not priority:
-            signal = self.learning.tag_signal(signal)
+        signal = self.learning.tag_signal(signal)
 
         decision = self.risk.approve(
             signal,

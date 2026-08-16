@@ -1,4 +1,4 @@
-"""Learning engine: ranking, exploration, pattern evidence (>=20), confidence effects."""
+"""Learning engine: ranking, exploration, allowlisted pattern evidence, confidence effects."""
 
 from __future__ import annotations
 
@@ -11,9 +11,31 @@ import numpy as np
 
 from trading_system.config import LearningConfig
 from trading_system.database import Database
+from trading_system.learning.keys import (
+    entry_keys_from_features,
+    exit_keys_from_features,
+    hold_minutes_from_position,
+    is_entry_key,
+    is_exit_key,
+    is_uneconomic,
+    pattern_keys_from_trade,
+    signal_pattern_keys,
+)
 from trading_system.learning.sessions import session_bucket, with_session
 from trading_system.types import Position, Signal
 
+# Re-export for callers / tests
+__all__ = [
+    "LearningEngine",
+    "StrategyRanker",
+    "classify_strategy_outcome",
+    "confidence_bucket",
+    "daily_objective_progress",
+    "learning_display",
+    "pattern_keys_from_trade",
+    "signal_pattern_keys",
+    "trade_session",
+]
 
 class StrategyRanker:
     def __init__(self, cfg: LearningConfig, db: Database) -> None:
@@ -120,16 +142,9 @@ def trade_session(pos: Position, cfg: LearningConfig) -> str:
 
 
 def _context_pattern_keys(features: dict[str, Any] | None) -> list[str]:
-    if not features:
-        return []
-    extra: list[str] = []
-    htf = features.get("htf_bias")
-    if htf and str(htf) not in ("", "unknown", "None"):
-        extra.append(f"htf={htf}")
-    chart = features.get("chart_pattern")
-    if chart:
-        extra.append(f"chart={chart}")
-    return extra
+    """Deprecated — kept empty; allowlisted buckets live in learning.keys."""
+    del features
+    return []
 
 
 def _features_from_position(pos: Position) -> dict[str, Any]:
@@ -143,22 +158,7 @@ def _features_from_position(pos: Position) -> dict[str, Any]:
         return {}
 
 
-def pattern_keys_from_trade(pos: Position, cfg: LearningConfig | None = None) -> list[str]:
-    base = [
-        f"regime={pos.regime}",
-        f"symbol={pos.symbol}",
-        f"exit_reason={pos.exit_reason or 'unknown'}",
-        f"confidence_bucket={confidence_bucket(pos.confidence)}",
-        f"strategy={pos.strategy}",
-        f"regime={pos.regime}|exit={pos.exit_reason or 'unknown'}",
-    ]
-    base.extend(_context_pattern_keys(_features_from_position(pos)))
-    if cfg is None or not cfg.session_aware:
-        return base
-    sess = trade_session(pos, cfg)
-    scoped = [with_session(sess, k) for k in base]
-    scoped.append(f"session={sess}")
-    return scoped
+# pattern_keys_from_trade / signal_pattern_keys imported from learning.keys
 
 
 def classify_strategy_outcome(pos: Position) -> tuple[str, bool]:
@@ -211,38 +211,17 @@ def learning_display(pos: Position) -> dict[str, Any]:
     }
 
 
-def signal_pattern_keys(signal: Signal, cfg: LearningConfig | None = None) -> list[str]:
-    base = [
-        f"regime={signal.regime.value}",
-        f"symbol={signal.symbol}",
-        f"confidence_bucket={confidence_bucket(signal.confidence)}",
-        f"strategy={signal.strategy}",
-    ]
-    base.extend(_context_pattern_keys(getattr(signal, "features", None)))
-    if cfg is None or not cfg.session_aware:
-        return base
-    ts = signal.timestamp or datetime.now(timezone.utc)
-    sess = session_bucket(ts, cfg.session_buckets)
-    signal.features["session"] = sess
-    scoped = [with_session(sess, k) for k in base]
-    scoped.append(f"session={sess}")
-    return scoped
-
-
-def _soft_reject_excluded(key: str, exclude_prefixes: list[str]) -> bool:
-    # Bare session key is too broad (would halt whole session)
-    if key.startswith("session=") and "|" not in key:
-        return True
-    for p in exclude_prefixes:
-        if key.startswith(p) or f"|{p}" in key:
-            return True
-    return False
-
-
 class LearningEngine:
-    def __init__(self, cfg: LearningConfig, db: Database) -> None:
+    def __init__(
+        self,
+        cfg: LearningConfig,
+        db: Database,
+        *,
+        edge_multiple: float = 0.5,
+    ) -> None:
         self.cfg = cfg
         self.db = db
+        self.edge_multiple = float(edge_multiple)
         self.ranker = StrategyRanker(cfg, db)
         self._trades_since_retrain = 0
         self.exploration_count = 0
@@ -261,7 +240,7 @@ class LearningEngine:
         return session_bucket(ts, self.cfg.session_buckets)
 
     def on_trade_closed(self, pos: Position) -> list[dict[str, Any]]:
-        """Record evidence; confirm patterns only at >= pattern_min_occurrences."""
+        """Record allowlisted evidence; confirm at >= pattern_min_occurrences."""
         self._trades_since_retrain += 1
         closed = self.db.get_all_closed()
         self.ranker.update_from_trades(closed)
@@ -271,23 +250,27 @@ class LearningEngine:
         threshold = self.cfg.pattern_min_occurrences
         newly_confirmed: list[dict[str, Any]] = []
         sess = trade_session(pos, self.cfg)
+        feats = _features_from_position(pos)
+        uneconomic = is_uneconomic(feats, edge_multiple=self.edge_multiple)
 
         label = "WIN" if direction == "win" else "LOSS"
         erosion_note = (
             " [COST_EROSION: strategy OK, net<=0 by fees/slip]" if cost_erosion else ""
         )
+        unecon_note = " [UNECONOMIC_EDGE: ENTRY keys skipped]" if uneconomic else ""
         self.db.insert_insight(
             "trade_observation",
             (
                 f"{label}(strategy) {pos.strategy} {pos.symbol} "
                 f"session={sess} regime={pos.regime} conf={pos.confidence:.1f} "
                 f"gross={pos.gross_pnl} net={pos.pnl} exit={pos.exit_reason}"
-                f"{erosion_note}"
+                f"{erosion_note}{unecon_note}"
             ),
             {
                 "trade_id": pos.id,
                 "direction": direction,
                 "cost_erosion": cost_erosion,
+                "uneconomic": uneconomic,
                 "gross_pnl": pos.gross_pnl,
                 "net_pnl": pos.pnl,
                 "session": sess,
@@ -335,54 +318,34 @@ class LearningEngine:
                     }
                 )
 
-        for key in pattern_keys_from_trade(pos, self.cfg):
-            ev = self.db.increment_pattern(key, direction, now)
-            count = int(ev["count"])
-            status = ev["status"]
-
-            if count < threshold:
-                continue
-
-            if status != "confirmed":
-                action_info = self._apply_confirmed_effect(
-                    key, direction, occurrences=count, threshold=threshold
-                )
-                decision_reason = (
-                    f"ACEPTADO como patrón {direction}: la key '{key}' se repitió "
-                    f"{count} veces (≥ umbral {threshold}). "
-                    f"Clasificación por señal/gross (no por net cash). "
-                    f"Scope: sesión/contexto de esta key — NO invalida los 5 "
-                    f"indicadores de entrada (BB/RSI/MACD/rejection) en bloque. "
-                    f"Efecto aplicado: {action_info['action']}."
-                )
-                self.db.confirm_pattern(
+        # ENTRY track — skip win/loss when uneconomic (cost track only)
+        if not uneconomic:
+            for key in entry_keys_from_features(
+                feats, pos.side, edge_multiple=self.edge_multiple
+            ):
+                newly = self._increment_and_maybe_confirm(
                     key,
                     direction,
-                    confirmed_count=count,
-                    decision_reason=decision_reason,
-                    effect_action=action_info["action"],
+                    now=now,
+                    threshold=threshold,
+                    sess=sess,
+                    track="entry",
                 )
-                newly_confirmed.append(
-                    {
-                        **ev,
-                        "status": "confirmed",
-                        "confirmed_count": count,
-                        "decision_reason": decision_reason,
-                        **action_info,
-                    }
-                )
-                self.db.insert_insight(
-                    "confirmed_pattern",
-                    decision_reason,
-                    {
-                        "pattern_key": key,
-                        "direction": direction,
-                        "count": count,
-                        "threshold": threshold,
-                        "action": action_info["action"],
-                        "session": sess,
-                    },
-                )
+                if newly:
+                    newly_confirmed.append(newly)
+
+        # EXIT track — diagnostics only (never bans entries)
+        for key in exit_keys_from_features(feats, hold_minutes_from_position(pos)):
+            newly = self._increment_and_maybe_confirm(
+                key,
+                direction,
+                now=now,
+                threshold=threshold,
+                sess=sess,
+                track="exit",
+            )
+            if newly:
+                newly_confirmed.append(newly)
 
         if self._trades_since_retrain >= self.cfg.retrain_every_n_trades:
             self._trades_since_retrain = 0
@@ -396,7 +359,6 @@ class LearningEngine:
         try:
             from trading_system.learning.priority import promote_pattern
 
-            feats = _features_from_position(pos)
             chart = feats.get("chart_pattern") or feats.get("setup") or pos.strategy
             if chart:
                 chart_s = str(chart)
@@ -436,6 +398,58 @@ class LearningEngine:
 
         return newly_confirmed
 
+    def _increment_and_maybe_confirm(
+        self,
+        key: str,
+        direction: str,
+        *,
+        now: str,
+        threshold: int,
+        sess: str,
+        track: str,
+    ) -> dict[str, Any] | None:
+        ev = self.db.increment_pattern(key, direction, now)
+        count = int(ev["count"])
+        status = ev["status"]
+        if count < threshold or status == "confirmed":
+            return None
+
+        action_info = self._apply_confirmed_effect(
+            key, direction, occurrences=count, threshold=threshold, track=track
+        )
+        decision_reason = (
+            f"ACEPTADO como patrón {direction} ({track}): la key '{key}' se repitió "
+            f"{count} veces (≥ umbral {threshold}). "
+            f"Efecto aplicado: {action_info['action']}."
+        )
+        self.db.confirm_pattern(
+            key,
+            direction,
+            confirmed_count=count,
+            decision_reason=decision_reason,
+            effect_action=action_info["action"],
+        )
+        self.db.insert_insight(
+            "confirmed_pattern",
+            decision_reason,
+            {
+                "pattern_key": key,
+                "direction": direction,
+                "count": count,
+                "threshold": threshold,
+                "action": action_info["action"],
+                "track": track,
+                "session": sess,
+            },
+        )
+        return {
+            **ev,
+            "status": "confirmed",
+            "confirmed_count": count,
+            "decision_reason": decision_reason,
+            **action_info,
+        }
+
     def _apply_confirmed_effect(
         self,
         pattern_key: str,
@@ -443,34 +457,32 @@ class LearningEngine:
         *,
         occurrences: int,
         threshold: int,
+        track: str = "entry",
     ) -> dict[str, str]:
         """
-        Win: confidence boost ONLY — do not alter strategy/pattern rules.
-        Loss: confidence penalty and optional soft-reject flag.
-        Affects only the matching contextual key, not all 5 entry indicators.
+        ENTRY win: confidence_boost.
+        ENTRY loss: hard_reject (banned from re-entry).
+        EXIT: exit_insight_only (never bans / never moves entry confidence).
         """
-        if direction == "win":
+        if track == "exit" or is_exit_key(pattern_key):
+            action = "exit_insight_only"
+            detail = (
+                f"EXIT diagnostic on key '{pattern_key}' only. "
+                f"Insight/observability — does NOT ban entries or change confidence."
+            )
+        elif direction == "win":
             action = "confidence_boost"
             detail = (
-                f"Win pattern on key '{pattern_key}' only. "
+                f"Win pattern on ENTRY key '{pattern_key}' only. "
                 f"Boost confidence by +{self.cfg.win_confidence_boost} when a new "
-                f"signal matches this key. Entry checklist BB/RSI/MACD/rejection unchanged."
+                f"signal matches this key."
             )
         else:
-            if self.cfg.loss_soft_reject:
-                action = "soft_reject"
-                detail = (
-                    f"Loss pattern on key '{pattern_key}' only. "
-                    f"Soft-reject (and -{self.cfg.loss_confidence_penalty} conf) when a "
-                    f"new signal matches this key. Does NOT mark all 5 indicators as bad."
-                )
-            else:
-                action = "confidence_penalty"
-                detail = (
-                    f"Loss pattern on key '{pattern_key}' only. "
-                    f"Penalize confidence by -{self.cfg.loss_confidence_penalty} when a "
-                    f"new signal matches this key. Entry checklist unchanged."
-                )
+            action = "hard_reject"
+            detail = (
+                f"Loss pattern on ENTRY key '{pattern_key}' confirmed. "
+                f"Hard-reject matching entries going forward (not confidence-only)."
+            )
         self.db.insert_applied_change(
             pattern_key,
             direction,
@@ -483,59 +495,43 @@ class LearningEngine:
 
     def apply_confidence_effects(self, signal: Signal) -> tuple[Signal, str | None]:
         """
-        Adjust signal confidence from confirmed patterns.
-        Returns (signal, soft_reject_reason|None).
-        Win patterns: boost only. Loss patterns: penalty and optional soft-reject.
-        Session-aware: only keys for the current UTC session apply.
+        ENTRY keys only: confirmed win → boost; confirmed loss → hard-reject.
+        EXIT keys never affect entry.
         """
-        keys = set(signal_pattern_keys(signal, self.cfg))
-        if not self.cfg.session_aware:
-            keys.add(f"regime={signal.regime.value}")
-
-        sess = signal.features.get("session") or self.current_session(signal.timestamp)
-        signal.features["session"] = sess
+        keys = set(
+            signal_pattern_keys(
+                signal, self.cfg, edge_multiple=self.edge_multiple
+            )
+        )
+        # Display-only session tag
+        if self.cfg.session_aware:
+            sess = self.current_session(signal.timestamp)
+            signal.features["session"] = sess
 
         confirmed_wins = {
             p["pattern_key"]
             for p in self.db.get_patterns(direction="win", status="confirmed")
+            if is_entry_key(p["pattern_key"])
         }
         confirmed_losses = {
             p["pattern_key"]
             for p in self.db.get_patterns(direction="loss", status="confirmed")
+            if is_entry_key(p["pattern_key"])
         }
-        # Never apply another session's confirmed keys
-        if self.cfg.session_aware:
-            prefix = f"session={sess}|"
-            bare = f"session={sess}"
-            confirmed_wins = {
-                k for k in confirmed_wins if k.startswith(prefix) or k == bare
-            }
-            confirmed_losses = {
-                k for k in confirmed_losses if k.startswith(prefix) or k == bare
-            }
-
-        exclude_prefixes = list(self.cfg.soft_reject_exclude_key_prefixes or [])
 
         boost = 0.0
-        penalty = 0.0
         reject_reason: str | None = None
 
         for k in keys:
             if k in confirmed_wins:
                 boost = max(boost, self.cfg.win_confidence_boost)
             if k in confirmed_losses:
-                penalty = max(penalty, self.cfg.loss_confidence_penalty)
-                if not self.cfg.loss_soft_reject:
-                    continue
-                if _soft_reject_excluded(k, exclude_prefixes):
-                    continue
-                if k in confirmed_wins:
-                    continue
                 reject_reason = f"confirmed_loss_pattern:{k}"
+                break
 
-        signal.confidence = max(0.0, min(100.0, signal.confidence + boost - penalty))
+        signal.confidence = max(0.0, min(100.0, signal.confidence + boost))
         signal.features["pattern_boost"] = boost
-        signal.features["pattern_penalty"] = penalty
+        signal.features["pattern_penalty"] = 0.0
         return signal, reject_reason
 
     def should_explore(self) -> bool:
@@ -564,16 +560,27 @@ class LearningEngine:
             "configured_phase": self.cfg.phase,
             "suggested_phase": phase,
             "total_trades": total_trades,
-            "exploration_ratio": self.exploration_ratio,
             "exploration_budget": self.cfg.exploration_budget,
+            "exploration_ratio": self.exploration_ratio,
             "pattern_min_occurrences": self.cfg.pattern_min_occurrences,
-            "confirmed_wins": len(self.db.get_patterns("win", "confirmed")),
-            "confirmed_losses": len(self.db.get_patterns("loss", "confirmed")),
-            "observing_patterns": len(self.db.get_patterns(status="observing")),
             "session_aware": self.cfg.session_aware,
-            "current_session": self.current_session(),
-            "goal": (
-                "Learn winning indicator/context setups, then apply them to "
-                "maximize net equity (north star: +50% equity per UTC day in exploitation)."
+            "goal": "maximize_net_equity",
+            "confirmed_wins": len(
+                [
+                    p
+                    for p in self.db.get_patterns(direction="win", status="confirmed")
+                    if is_entry_key(p["pattern_key"])
+                ]
             ),
+            "confirmed_losses": len(
+                [
+                    p
+                    for p in self.db.get_patterns(direction="loss", status="confirmed")
+                    if is_entry_key(p["pattern_key"])
+                ]
+            ),
+            "observing_patterns": len(
+                self.db.get_patterns(status="observing")
+            ),
+            "current_session": self.current_session(),
         }

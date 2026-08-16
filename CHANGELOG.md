@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.28
+
+- Learning keys policy v2: allowlisted ENTRY/EXIT buckets only (no session/symbol/chart/strategy effect keys)
+- Confirmed ENTRY losses hard-reject; confirm threshold 10; sanitize wipe on deploy
+- hist15 seed priority-file only (no pattern_evidence chart poison)
+
 ## 0.1.27
 
 - Capital auto-refill triggers when flat and cash/equity ≤ `capital_policy.refill_below` (default **30**, was ~0)
