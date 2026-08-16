@@ -12,9 +12,11 @@ import numpy as np
 from trading_system.config import LearningConfig
 from trading_system.database import Database
 from trading_system.learning.keys import (
+    HARD_REJECT_FORBIDDEN_KEYS,
     entry_keys_from_features,
     exit_keys_from_features,
     hold_minutes_from_position,
+    is_entry_compound,
     is_entry_key,
     is_exit_key,
     is_uneconomic,
@@ -450,6 +452,24 @@ class LearningEngine:
             **action_info,
         }
 
+    def _loss_effect_action(self, pattern_key: str) -> str:
+        """
+        North-star loss policy:
+        - 1-dim / ultra-common → confidence_penalty only (never hard_reject)
+        - compounds → soft_reject (explore bypass) unless compound_loss_hard_reject
+        """
+        from trading_system.learning.governor import is_hard_reject_forbidden_key
+
+        if is_hard_reject_forbidden_key(pattern_key) or not is_entry_compound(
+            pattern_key
+        ):
+            if pattern_key in HARD_REJECT_FORBIDDEN_KEYS:
+                return "confidence_penalty"
+            return "confidence_penalty"
+        if bool(getattr(self.cfg, "compound_loss_hard_reject", False)):
+            return "hard_reject"
+        return "soft_reject"
+
     def _apply_confirmed_effect(
         self,
         pattern_key: str,
@@ -460,9 +480,9 @@ class LearningEngine:
         track: str = "entry",
     ) -> dict[str, str]:
         """
-        ENTRY win: confidence_boost.
-        ENTRY loss: hard_reject (banned from re-entry).
-        EXIT: exit_insight_only (never bans / never moves entry confidence).
+        ENTRY win: confidence_boost (compounds get stronger boost at apply-time).
+        ENTRY loss: never freeze book on 1-dim defaults; compounds soft/optional hard.
+        EXIT: exit_insight_only.
         """
         if track == "exit" or is_exit_key(pattern_key):
             action = "exit_insight_only"
@@ -474,15 +494,27 @@ class LearningEngine:
             action = "confidence_boost"
             detail = (
                 f"Win pattern on ENTRY key '{pattern_key}' only. "
-                f"Boost confidence by +{self.cfg.win_confidence_boost} when a new "
-                f"signal matches this key."
+                f"Boost confidence when a new signal matches this key "
+                f"(compounds preferred for north-star equity growth)."
             )
         else:
-            action = "hard_reject"
-            detail = (
-                f"Loss pattern on ENTRY key '{pattern_key}' confirmed. "
-                f"Hard-reject matching entries going forward (not confidence-only)."
-            )
+            action = self._loss_effect_action(pattern_key)
+            if action == "hard_reject":
+                detail = (
+                    f"Loss on rare ENTRY compound '{pattern_key}'. "
+                    f"Hard-reject matching entries (idle governor can demote)."
+                )
+            elif action == "soft_reject":
+                detail = (
+                    f"Loss on ENTRY compound '{pattern_key}'. "
+                    f"Soft-reject with exploration bypass — does not freeze discovery."
+                )
+            else:
+                detail = (
+                    f"Loss on ENTRY key '{pattern_key}'. "
+                    f"Confidence penalty only — never hard-bans the book "
+                    f"(north-star: maximize net equity, not zero trades)."
+                )
         self.db.insert_applied_change(
             pattern_key,
             direction,
@@ -495,43 +527,94 @@ class LearningEngine:
 
     def apply_confidence_effects(self, signal: Signal) -> tuple[Signal, str | None]:
         """
-        ENTRY keys only: confirmed win → boost; confirmed loss → hard-reject.
-        EXIT keys never affect entry.
+        ENTRY keys: confirmed win → boost (compounds higher);
+        confirmed loss → penalty / soft-reject (explore bypass) / rare hard-reject.
+        Never hard-reject 1-dim defaults. EXIT keys ignored.
         """
         keys = set(
             signal_pattern_keys(
                 signal, self.cfg, edge_multiple=self.edge_multiple
             )
         )
-        # Display-only session tag
         if self.cfg.session_aware:
             sess = self.current_session(signal.timestamp)
             signal.features["session"] = sess
 
-        confirmed_wins = {
-            p["pattern_key"]
+        win_rows = [
+            p
             for p in self.db.get_patterns(direction="win", status="confirmed")
             if is_entry_key(p["pattern_key"])
-        }
-        confirmed_losses = {
-            p["pattern_key"]
+        ]
+        loss_rows = [
+            p
             for p in self.db.get_patterns(direction="loss", status="confirmed")
             if is_entry_key(p["pattern_key"])
-        }
+        ]
+        confirmed_wins = {p["pattern_key"]: p for p in win_rows}
+        confirmed_losses = {p["pattern_key"]: p for p in loss_rows}
 
         boost = 0.0
+        penalty = 0.0
         reject_reason: str | None = None
+        exploring = bool(getattr(signal, "exploration", False)) or (
+            self.cfg.phase == "discovery"
+        )
+        # Tag exploration early for soft-reject bypass (north-star: don't idle)
+        if self.cfg.phase == "discovery":
+            exploring = True
+
+        win_compound_boost = float(
+            getattr(self.cfg, "win_compound_boost", None)
+            or self.cfg.win_confidence_boost
+        )
 
         for k in keys:
             if k in confirmed_wins:
-                boost = max(boost, self.cfg.win_confidence_boost)
-            if k in confirmed_losses:
-                reject_reason = f"confirmed_loss_pattern:{k}"
-                break
+                if is_entry_compound(k):
+                    boost = max(boost, win_compound_boost)
+                    signal.features["win_compound_match"] = k
+                else:
+                    boost = max(boost, self.cfg.win_confidence_boost)
+            if k not in confirmed_losses:
+                continue
+            row = confirmed_losses[k]
+            action = (row.get("effect_action") or "").strip() or self._loss_effect_action(
+                k
+            )
+            # Legacy hard_reject on forbidden/singles → treat as penalty only
+            from trading_system.learning.governor import is_hard_reject_forbidden_key
 
-        signal.confidence = max(0.0, min(100.0, signal.confidence + boost))
+            if action == "hard_reject" and is_hard_reject_forbidden_key(k):
+                action = "confidence_penalty"
+            if action == "confidence_penalty":
+                penalty = max(penalty, self.cfg.loss_confidence_penalty)
+            elif action == "soft_reject":
+                penalty = max(penalty, self.cfg.loss_confidence_penalty)
+                if not exploring:
+                    reject_reason = f"confirmed_loss_pattern:{k}"
+                    break
+                signal.features["soft_reject_bypassed"] = k
+            elif action == "hard_reject":
+                # Rare compounds only; still bypass in discovery to protect fill rate
+                if exploring and not bool(
+                    getattr(self.cfg, "compound_loss_hard_reject", False)
+                ):
+                    penalty = max(penalty, self.cfg.loss_confidence_penalty)
+                    signal.features["hard_reject_bypassed"] = k
+                elif exploring and self.cfg.phase == "discovery":
+                    # Discovery never permanently freezes via learning bans
+                    penalty = max(penalty, self.cfg.loss_confidence_penalty)
+                    signal.features["hard_reject_bypassed"] = k
+                else:
+                    reject_reason = f"confirmed_loss_pattern:{k}"
+                    break
+
+        signal.confidence = max(
+            0.0, min(100.0, signal.confidence + boost - penalty)
+        )
         signal.features["pattern_boost"] = boost
-        signal.features["pattern_penalty"] = 0.0
+        signal.features["pattern_penalty"] = penalty
+        signal.features["north_star"] = "maximize_net_equity"
         return signal, reject_reason
 
     def should_explore(self) -> bool:

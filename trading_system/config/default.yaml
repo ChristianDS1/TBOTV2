@@ -1,7 +1,7 @@
 mode: paper  # paper | live — live requires explicit activation
 
-# Terminal goal: maximize net equity. Learning finds winning setups; exploitation
-# aims at +50% equity per UTC day. Discovery does NOT size/leverage to chase it.
+# Terminal goal (code law): maximize net equity growth. Learning must not
+# freeze the book. Discovery does NOT size/leverage to chase +50%/day.
 objective:
   name: maximize_net_equity
   daily_equity_gain_pct: 50.0
@@ -120,6 +120,13 @@ learning:
   priority_min_net_wr: 0.90
   priority_min_n: 10
   discovery_skip_hard_edge: true
+  # North-star: never freeze book on common 1-dim keys; compounds hard-reject OFF by default
+  compound_loss_hard_reject: false
+  win_compound_boost: 15.0
+  idle_governor_enabled: true
+  idle_minutes: 45
+  idle_min_rejects: 8
+  idle_loss_reject_fraction: 0.5
   session_buckets:
     - { name: asia, start_hour_utc: 0, end_hour_utc: 7 }
     - { name: europe, start_hour_utc: 7, end_hour_utc: 12 }

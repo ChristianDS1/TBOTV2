@@ -103,9 +103,15 @@ class LearningConfig(BaseModel):
     priority_min_net_wr: float = 0.90
     priority_min_n: int = 10
     discovery_skip_hard_edge: bool = True  # outside priority: don't hard-reject on thin edge
+    # ENTRY loss policy (north-star): never freeze book on 1-dim defaults
+    compound_loss_hard_reject: bool = False  # optional rare-compound bans; default off
+    win_compound_boost: float = 15.0  # confirmed win compounds (path to equity growth)
+    idle_governor_enabled: bool = True
+    idle_minutes: float = 45.0
+    idle_min_rejects: int = 8
+    idle_loss_reject_fraction: float = 0.5
     retrain_every_n_trades: int = 50
     recency_half_life_trades: int = 100
-
 
 class ObjectiveConfig(BaseModel):
     """North-star goal. Discovery learns; exploitation aims at daily equity target."""

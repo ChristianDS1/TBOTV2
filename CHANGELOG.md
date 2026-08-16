@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.29
+
+- North-star enforcement: maximize net equity; learning bans must not idle the book
+- No hard_reject on 1-dim/default ENTRY keys; compounds soft-reject + explore bypass (hard-reject optional, default off)
+- Idle governor auto-demotes mass hard-rejects when fills≈0; deploy neutralize v3
+- Win compounds get stronger boost/prefer; leverage stays 50x
+
 ## 0.1.28
 
 - Learning keys policy v2: allowlisted ENTRY/EXIT buckets only (no session/symbol/chart/strategy effect keys)

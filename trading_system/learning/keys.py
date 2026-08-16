@@ -49,6 +49,21 @@ FORBIDDEN_DIMS = frozenset(
     }
 )
 
+# Ultra-common 1-dim values that ban almost the whole book if hard-rejected
+HARD_REJECT_FORBIDDEN_KEYS = frozenset(
+    {
+        "rejection=none",
+        "macd_cross=none",
+        "rsi_vs_side=counter",
+        "bb_width_bin=squeeze",
+        "backing_quality=none",
+        "macd_fast_slope=flat",
+        "rsi_slope=flat",
+        "edge_ratio_bin=lt1",
+        "edge_ratio_bin=uneconomic",
+    }
+)
+
 NEAR_ZERO_MACD = 1e-6
 RSI_FLAT_EPS = 0.5
 
@@ -330,6 +345,24 @@ def is_exit_key(key: str) -> bool:
         return True
     # only allowed EXIT compound
     return set(dims) == {"exit_class", "mfe_bin"}  # type: ignore[arg-type]
+
+
+def is_entry_compound(key: str) -> bool:
+    """True for priority multi-dim ENTRY keys (not ultra-common singles)."""
+    if key.startswith("htf_ltf_combo="):
+        return True
+    if "|" not in key:
+        return False
+    # htf_ltf_combo values embed | — already handled
+    parts = key.split("|")
+    dims = [_dim_of_part(p) for p in parts]
+    if any(d is None for d in dims):
+        return False
+    allowed_pairs = {
+        frozenset({"rsi_zone", "bb_pos"}),
+        frozenset({"rsi_vs_side", "macd_fast_vs_slow"}),
+    }
+    return len(parts) == 2 and frozenset(dims) in allowed_pairs  # type: ignore[arg-type]
 
 
 def is_entry_key(key: str) -> bool:

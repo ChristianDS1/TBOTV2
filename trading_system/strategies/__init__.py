@@ -173,7 +173,7 @@ def compute_tight_stop_loss(
     mode = (getattr(cfg, "sl_mode", "margin_pct") or "margin_pct").lower()
     if mode == "margin_pct":
         m = float(margin) if margin is not None else 10.0
-        lev = float(leverage) if leverage is not None else 20.0
+        lev = float(leverage) if leverage is not None else 50.0
         sl, budget_bps, trigger_bps, _cash = compute_sl_from_margin_pct(
             side=side,
             price=price,
@@ -420,7 +420,7 @@ class BBMeanReversionStrategy(Strategy):
             exit_fee_bps=0.0,
             take_profit=tp,
             margin=10.0,
-            leverage=20.0,
+            leverage=50.0,
         )
         features["tp_mode"] = tp_mode
         features["tp_band_fraction"] = float(cfg.tp_band_fraction)
@@ -540,7 +540,7 @@ class MomentumContinuationStrategy(Strategy):
             exit_fee_bps=0.0,
             take_profit=None,
             margin=10.0,
-            leverage=20.0,
+            leverage=50.0,
         )
         features["stop_loss"] = sl
         features["sl_budget_bps"] = sl_budget_bps
@@ -689,7 +689,7 @@ class ChartPatternStrategy(Strategy):
             exit_fee_bps=0.0,
             take_profit=None,
             margin=10.0,
-            leverage=20.0,
+            leverage=50.0,
         )
         features["stop_loss"] = sl
         features["sl_budget_bps"] = sl_budget_bps

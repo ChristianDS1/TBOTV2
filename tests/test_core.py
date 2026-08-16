@@ -379,18 +379,23 @@ def test_win_pattern_confirms_at_10_boost_only(cfg, tmp_db):
     )
     adjusted, reject = le.apply_confidence_effects(sig)
     assert reject is None
-    assert adjusted.confidence == pytest.approx(58.0)
+    # Single-key boost (+8) and/or compound boost (+15) depending on matching keys
+    assert adjusted.confidence >= 58.0
+    assert float(adjusted.features.get("pattern_boost") or 0) >= 8.0
 
 
-def test_loss_pattern_hard_reject_at_10(cfg, tmp_db):
+def test_loss_pattern_penalty_not_hard_reject_singles(cfg, tmp_db):
+    """1-dim ENTRY losses → confidence_penalty; discovery must still allow entry."""
     cfg.learning.pattern_min_occurrences = 10
+    cfg.learning.phase = "discovery"
     le = LearningEngine(cfg.learning, tmp_db)
     for _ in range(10):
         pos = _closed_pos(pnl=-0.4, regime="breakout", symbol="ETH/USDT")
         pos.id = tmp_db.insert_trade(pos)
         le.on_trade_closed(pos)
     changes = tmp_db.applied_changes_on_day(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-    assert any(c["action"] == "hard_reject" for c in changes)
+    assert any(c["action"] == "confidence_penalty" for c in changes)
+    assert not any(c["action"] == "hard_reject" for c in changes)
     sig = Signal(
         symbol="ETH/USDT",
         venue=Venue.CRYPTO,
@@ -419,11 +424,12 @@ def test_loss_pattern_hard_reject_at_10(cfg, tmp_db):
             "edge_ratio": 5.0,
         },
         timestamp=datetime.now(timezone.utc),
+        exploration=True,
     )
     adjusted, reject = le.apply_confidence_effects(sig)
-    assert reject is not None
-    assert "confirmed_loss_pattern" in reject
-    assert adjusted.confidence == pytest.approx(70.0)  # no penalty path; reject only
+    assert reject is None
+    assert adjusted.confidence < 70
+    assert float(adjusted.features.get("pattern_penalty") or 0) > 0
 
 
 def test_capital_auto_refill(cfg, tmp_db):
@@ -1652,3 +1658,70 @@ def test_sanitize_wipes_legacy_keeps_allowlist(cfg, tmp_db):
     assert "session=weekend" not in left
     assert "chart=hs_top" not in left
     assert any(k.startswith("cost_erosion") for k in left)
+
+
+def test_idle_governor_demotes_hard_rejects(cfg, tmp_db):
+    from datetime import timedelta
+    from trading_system.learning.governor import maybe_idle_unban, demote_hard_reject_keys
+    from trading_system.types import RejectedSignal
+
+    now = datetime.now(timezone.utc)
+    # Stale confirmed hard_reject on forbidden single
+    key = "rejection=none"
+    for _ in range(10):
+        tmp_db.increment_pattern(key, "loss", now.isoformat())
+    tmp_db.confirm_pattern(
+        key, "loss", confirmed_count=10, decision_reason="legacy", effect_action="hard_reject"
+    )
+    # Mass rejects, zero recent fills
+    for i in range(10):
+        tmp_db.insert_rejected(
+            RejectedSignal(
+                symbol="BTC/USDT",
+                venue=Venue.CRYPTO,
+                side=Side.CALL,
+                strategy="bulkowski_pattern",
+                confidence=50,
+                reason=f"confirmed_loss_pattern:{key}",
+                features={},
+                regime=MarketRegime.RANGING,
+                timestamp=now - timedelta(minutes=5),
+            )
+        )
+    # Old trade outside idle window
+    old = _closed_pos(pnl=-0.1)
+    old.entry_time = now - timedelta(hours=3)
+    old.exit_time = now - timedelta(hours=3)
+    tmp_db.insert_trade(old)
+
+    out = maybe_idle_unban(
+        tmp_db, idle_minutes=45.0, min_rejects=8, loss_reject_fraction=0.5
+    )
+    assert out is not None
+    assert out["demoted"] >= 1 or out.get("sweep_demoted", 0) >= 1
+    rows = tmp_db.get_patterns(direction="loss")
+    banned = [r for r in rows if r["pattern_key"] == key]
+    assert banned
+    assert banned[0]["status"] == "observing"
+    assert banned[0]["effect_action"] != "hard_reject"
+
+
+def test_forbidden_single_never_confirms_hard_reject(cfg, tmp_db):
+    cfg.learning.pattern_min_occurrences = 10
+    le = LearningEngine(cfg.learning, tmp_db)
+    # Force rejection=none features
+    for _ in range(10):
+        pos = _closed_pos(
+            pnl=-0.3,
+            features_json=_entry_feats(rejection_bull=False, rejection_bear=False),
+        )
+        pos.id = tmp_db.insert_trade(pos)
+        le.on_trade_closed(pos)
+    confirmed = tmp_db.get_patterns(direction="loss", status="confirmed")
+    none_rows = [p for p in confirmed if p["pattern_key"] == "rejection=none"]
+    if none_rows:
+        assert none_rows[0]["effect_action"] != "hard_reject"
+
+
+def test_leverage_config_is_50x(cfg):
+    assert float(cfg.execution.leverage) == 50.0

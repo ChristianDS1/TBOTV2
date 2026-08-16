@@ -53,10 +53,14 @@ class TradingEngine:
         )
         try:
             from trading_system.learning.sanitize import ensure_pattern_keys_policy
+            from trading_system.learning.governor import (
+                ensure_no_single_hard_reject_policy,
+            )
 
             ensure_pattern_keys_policy(self.db)
+            ensure_no_single_hard_reject_policy(self.db)
         except Exception as e:
-            logger.warning("pattern keys sanitize skipped: %s", e)
+            logger.warning("pattern keys sanitize/governor skipped: %s", e)
         self.model = WinProbabilityModel(ROOT / "models" / "artifacts")
         self._hist_model = None
         hist_dir = ROOT / "models" / "hist15_clean"
@@ -139,6 +143,26 @@ class TradingEngine:
     def _tick_unlocked(self) -> PortfolioSnapshot:
         self._cycle += 1
         self.risk.check_stale()
+
+        # North-star idle governor: 0 fills + mass learning bans → unban
+        if bool(getattr(self.cfg.learning, "idle_governor_enabled", True)):
+            try:
+                from trading_system.learning.governor import maybe_idle_unban
+
+                maybe_idle_unban(
+                    self.db,
+                    idle_minutes=float(
+                        getattr(self.cfg.learning, "idle_minutes", 45.0)
+                    ),
+                    min_rejects=int(
+                        getattr(self.cfg.learning, "idle_min_rejects", 8)
+                    ),
+                    loss_reject_fraction=float(
+                        getattr(self.cfg.learning, "idle_loss_reject_fraction", 0.5)
+                    ),
+                )
+            except Exception as e:
+                logger.warning("idle_governor: %s", e)
 
         # Daily report rollover (UTC)
         _, report_path = maybe_rollover_daily_report(
@@ -519,15 +543,23 @@ class TradingEngine:
         signal.features["p_win"] = p_win
         signal.confidence = 0.7 * signal.confidence + 0.3 * (p_win * 100)
 
-        # Confirmed ENTRY patterns: win=boost; loss=hard-reject (also for priority setups)
+        # Confirmed ENTRY patterns: win boost; loss penalty/soft (never freeze book on 1-dim)
+        # Tag exploration before effects so soft-reject can bypass (north-star fill rate)
+        signal = self.learning.tag_signal(signal)
         signal, reject_reason = self.learning.apply_confidence_effects(signal)
-        if priority:
+        if priority or signal.features.get("win_compound_match"):
             boost = float(getattr(self.cfg.learning, "priority_boost", 25.0) or 25.0)
+            if signal.features.get("win_compound_match"):
+                boost = max(
+                    boost,
+                    float(getattr(self.cfg.learning, "win_compound_boost", 15.0) or 15.0),
+                )
             signal.confidence = min(100.0, float(signal.confidence) + boost)
             signal.features["pattern_boost"] = max(
                 float(signal.features.get("pattern_boost") or 0.0), boost
             )
-            signal.features["priority_forced"] = True
+            signal.features["priority_forced"] = bool(priority)
+            signal.features["north_star_prefer_win"] = True
         if reject_reason:
             self.db.insert_rejected(
                 RejectedSignal(
@@ -543,8 +575,6 @@ class TradingEngine:
                 )
             )
             return False
-
-        signal = self.learning.tag_signal(signal)
 
         decision = self.risk.approve(
             signal,
