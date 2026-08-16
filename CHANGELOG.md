@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.27
+
+- Capital auto-refill triggers when flat and cash/equity ≤ `capital_policy.refill_below` (default **30**, was ~0)
+
 ## 0.1.26
 
 - Cleanup: collapse redundant weekend branch in FX `get_ohlcv`; clarify OTC-off comments (crypto-only weekend)

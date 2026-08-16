@@ -135,7 +135,8 @@ learning:
 
 capital_policy:
   auto_refill: true
-  refill_to: 100.0  # top up when paper capital is exhausted
+  refill_to: 100.0  # top up target after reset
+  refill_below: 30.0  # reset when flat and cash/equity <= this (was ~0)
 
 forex_session:
   # Approximate FX week in UTC — closed weekends

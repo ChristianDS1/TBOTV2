@@ -119,6 +119,8 @@ class ObjectiveConfig(BaseModel):
 class CapitalPolicyConfig(BaseModel):
     auto_refill: bool = True
     refill_to: float = 100.0
+    # Flat book: refill when cash or equity falls to this level (was effectively ~0)
+    refill_below: float = 30.0
 
 
 class ForexSessionConfig(BaseModel):

@@ -360,10 +360,36 @@ def test_capital_auto_refill(cfg, tmp_db):
         auto_refill=True,
         refill_to=100.0,
         min_trade_size=2.5,
+        refill_below=30.0,
     )
     assert did is True
     assert port.cash == 100.0
     assert port.capital_resets() == 1
+
+
+def test_capital_refill_at_threshold_30(cfg, tmp_db):
+    port = Portfolio(tmp_db, 100)
+    port.cash = 30.0
+    tmp_db.set_state("cash", "30.0")
+    did = port.maybe_refill(
+        auto_refill=True,
+        refill_to=100.0,
+        min_trade_size=10.0,
+        refill_below=30.0,
+    )
+    assert did is True
+    assert port.cash == 100.0
+
+    port.cash = 30.01
+    tmp_db.set_state("cash", "30.01")
+    did = port.maybe_refill(
+        auto_refill=True,
+        refill_to=100.0,
+        min_trade_size=10.0,
+        refill_below=30.0,
+    )
+    assert did is False
+    assert port.cash == 30.01
 
 
 def test_capital_no_refill_with_open_position(cfg, tmp_db):

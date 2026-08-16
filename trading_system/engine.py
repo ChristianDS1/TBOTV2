@@ -151,6 +151,7 @@ class TradingEngine:
             refill_to=self.cfg.capital_policy.refill_to or self.cfg.capital.initial,
             min_trade_size=self.cfg.capital.base_trade_size,
             mark_prices=mark_prices,
+            refill_below=float(getattr(self.cfg.capital_policy, "refill_below", 30.0)),
         )
 
         # --- Crypto (entries only on weekend; always refresh marks for open book) ---
@@ -231,6 +232,7 @@ class TradingEngine:
             refill_to=self.cfg.capital_policy.refill_to or self.cfg.capital.initial,
             min_trade_size=self.cfg.capital.base_trade_size,
             mark_prices=mark_prices,
+            refill_below=float(getattr(self.cfg.capital_policy, "refill_below", 30.0)),
         )
 
         closed_all = self.db.get_all_closed()
@@ -568,6 +570,7 @@ class TradingEngine:
                 refill_to=self.cfg.capital_policy.refill_to or self.cfg.capital.initial,
                 min_trade_size=self.cfg.capital.base_trade_size,
                 mark_prices={symbol: float(df["close"].iloc[-1])},
+                refill_below=float(getattr(self.cfg.capital_policy, "refill_below", 30.0)),
             )
             if self.portfolio.cash < decision.size:
                 self.db.insert_rejected(

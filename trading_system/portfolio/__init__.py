@@ -98,9 +98,10 @@ class Portfolio:
         refill_to: float,
         min_trade_size: float,
         mark_prices: dict[str, float] | None = None,
+        refill_below: float = 30.0,
     ) -> bool:
         """
-        If paper capital is exhausted and no open positions, top up to refill_to.
+        If flat and cash/equity <= refill_below, top up to refill_to.
         Never stops trading. Returns True if a refill happened.
         """
         if not auto_refill:
@@ -110,7 +111,13 @@ class Portfolio:
             return False
 
         eq = self.equity(mark_prices or {})
-        needs = self.cash < min_trade_size or eq <= 0 or self.cash <= 0
+        floor = float(refill_below)
+        # Also refill if cash cannot cover one trade (even above floor)
+        needs = (
+            self.cash <= floor
+            or eq <= floor
+            or self.cash < float(min_trade_size)
+        )
         if not needs:
             return False
 
@@ -120,8 +127,15 @@ class Portfolio:
         self.db.set_state("capital_resets", str(resets))
         self.db.insert_insight(
             "capital_reset",
-            f"Paper capital exhausted — refilled to €{refill_to:.2f} (reset #{resets}). Trading continues.",
-            {"refill_to": refill_to, "resets": resets},
+            (
+                f"Paper capital ≤€{floor:.2f} — refilled to €{refill_to:.2f} "
+                f"(reset #{resets}). Trading continues."
+            ),
+            {
+                "refill_to": refill_to,
+                "refill_below": floor,
+                "resets": resets,
+            },
         )
         return True
 
