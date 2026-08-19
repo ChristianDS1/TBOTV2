@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.30
+
+- Windows launchers only: `scripts/start_tbot*` + `start_tbot_loop*` (log, browser, 72h restart)
+- `docs/RUN_72H.md` — operation guide; no trading_system / engine changes
+
 ## 0.1.29
 
 - North-star enforcement: maximize net equity; learning bans must not idle the book

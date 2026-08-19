@@ -20,6 +20,15 @@ python -m trading_system run
 
 Open **http://127.0.0.1:8000/** — monitor refreshes every 5s.
 
+## Windows 72h run
+
+Launcher scripts only (no change to bot logic):
+
+- **Normal:** double-click `scripts\start_tbot.bat` — console, daily log under `logs/`, opens monitor once
+- **Long run:** `scripts\start_tbot_loop.bat` — auto-restart ~30s after crash/exit
+
+See [docs/RUN_72H.md](docs/RUN_72H.md) for logs, reports, sleep settings, and health checks.
+
 ```bash
 python -m trading_system once --simulate
 python -m trading_system backtest --bars 500
