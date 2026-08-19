@@ -1,4 +1,4 @@
-# Auto-restart wrapper for 72h+ runs. Launcher only — no app code changes.
+# Auto-restart wrapper for 72h+ runs. Launcher only - no app code changes.
 param(
     [string]$BindHost = "127.0.0.1",
     [int]$Port = 8000,
@@ -47,9 +47,10 @@ try {
 
         & powershell @psArgs
         $code = $LASTEXITCODE
-        Write-LoopLine "Process exited code=$code — restart in ${RestartDelaySec}s (Ctrl+C to abort)"
+        Write-LoopLine "Process exited code=$code - restart in ${RestartDelaySec}s (Ctrl+C to abort)"
         Start-Sleep -Seconds $RestartDelaySec
     }
-} finally {
+}
+finally {
     Write-LoopLine "=== loop stopped ==="
 }

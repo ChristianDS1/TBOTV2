@@ -1,4 +1,4 @@
-# Start T-BOT monitor + engine (Windows). Does NOT modify app code — launcher only.
+# Start T-BOT monitor + engine (Windows). Does NOT modify app code - launcher only.
 param(
     [string]$BindHost = "127.0.0.1",
     [int]$Port = 8000,
@@ -45,7 +45,7 @@ function Show-StandbyWarning {
             $hex = $Matches[1]
             $sec = [Convert]::ToInt32($hex, 16)
             if ($sec -gt 0 -and $sec -lt 3600) {
-                Write-LogLine "WARN: AC standby timeout ~${sec}s — set Sleep to Never for 72h+ runs (see docs/RUN_72H.md)"
+                Write-LogLine "WARN: AC standby timeout ~${sec}s - set Sleep to Never for 72h+ runs (see docs/RUN_72H.md)"
             }
         }
     } catch { }
@@ -62,7 +62,7 @@ function Open-MonitorBrowser {
 
 $py = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) {
-    Write-LogLine "ERROR: venv not found at $py — run: python -m venv .venv && pip install -r requirements.txt"
+    Write-LogLine "ERROR: venv not found at $py - run: python -m venv .venv; pip install -r requirements.txt"
     exit 1
 }
 
