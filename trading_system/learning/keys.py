@@ -67,6 +67,54 @@ HARD_REJECT_FORBIDDEN_KEYS = frozenset(
 NEAR_ZERO_MACD = 1e-6
 RSI_FLAT_EPS = 0.5
 
+# Flat / "went nowhere" exits — do NOT train ENTRY win/loss evidence
+LIMBO_EXIT_REASONS = frozenset(
+    {
+        "limbo_timeout",
+        "limbo_flat",
+        "flat_timeout",
+    }
+)
+
+# Exclusive ENTRY label thresholds (policy v4)
+ENTRY_WR_WIN = 0.55
+ENTRY_WR_LOSS = 0.45
+
+
+def is_limbo_exit(exit_reason: str | None) -> bool:
+    if not exit_reason:
+        return False
+    return str(exit_reason).strip().lower() in LIMBO_EXIT_REASONS
+
+
+def classify_entry_label(
+    wins: int,
+    losses: int,
+    *,
+    min_n: int = 10,
+    wr_win: float = ENTRY_WR_WIN,
+    wr_loss: float = ENTRY_WR_LOSS,
+    mean_net: float | None = None,
+) -> str:
+    """
+    Exclusive ENTRY label for one allowlisted key (never boost AND penalty).
+
+    Returns: observing | winner | loser | neutral
+    """
+    w = max(0, int(wins))
+    l = max(0, int(losses))
+    n = w + l
+    if n < int(min_n):
+        return "observing"
+    wr = w / n if n else 0.0
+    if wr >= float(wr_win):
+        if mean_net is not None and mean_net <= 0:
+            return "neutral"
+        return "winner"
+    if wr <= float(wr_loss):
+        return "loser"
+    return "neutral"
+
 
 def _f(features: dict[str, Any], key: str) -> float | None:
     v = features.get(key)

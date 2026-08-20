@@ -585,7 +585,8 @@ def test_take_profit_negative_net_is_strategy_win_not_loss(cfg, tmp_db):
     wins = tmp_db.get_patterns(direction="win")
     losses = tmp_db.get_patterns(direction="loss")
     costs = tmp_db.get_patterns(direction="cost_erosion")
-    assert any(p["pattern_key"].startswith("rsi_zone=") for p in wins)
+    # cost_erosion must NOT inflate ENTRY wins
+    assert not any(p["pattern_key"].startswith("rsi_zone=") for p in wins)
     assert not any(p["pattern_key"].startswith("exit_reason=") for p in wins)
     assert not any(p["pattern_key"].startswith("exit_reason=") for p in losses)
     assert any("cost_erosion" in p["pattern_key"] for p in costs)
@@ -649,9 +650,149 @@ def test_rebuild_reclassifies_legacy_take_profit(cfg, tmp_db):
     wins = tmp_db.get_patterns(direction="win")
     losses = tmp_db.get_patterns(direction="loss")
     costs = tmp_db.get_patterns(direction="cost_erosion")
-    assert any(p["pattern_key"].startswith("rsi_zone=") for p in wins)
+    # TP + net<=0 → cost_erosion insight only; no ENTRY win inflation
+    assert not any(p["pattern_key"].startswith("rsi_zone=") for p in wins)
     assert not any("exit_reason=take_profit" in p["pattern_key"] for p in wins + losses)
     assert len(costs) >= 1
+
+
+def test_limbo_timeout_skips_entry_evidence(cfg, tmp_db):
+    cfg.learning.pattern_min_occurrences = 10
+    le = LearningEngine(cfg.learning, tmp_db)
+    for _ in range(10):
+        pos = _closed_pos(pnl=-0.02, exit_reason="limbo_timeout")
+        pos.id = tmp_db.insert_trade(pos)
+        le.on_trade_closed(pos)
+    wins = [p for p in tmp_db.get_patterns(direction="win") if p["pattern_key"].startswith("rsi_zone=")]
+    losses = [
+        p for p in tmp_db.get_patterns(direction="loss") if p["pattern_key"].startswith("rsi_zone=")
+    ]
+    assert wins == []
+    assert losses == []
+
+
+def test_entry_wr_exclusive_winner_not_penalty(cfg, tmp_db):
+    """Same key: 6 wins + 4 losses → winner only (no boost+penalty together)."""
+    from trading_system.learning.keys import classify_entry_label
+
+    assert classify_entry_label(6, 4, min_n=10) == "winner"
+    assert classify_entry_label(4, 6, min_n=10) == "loser"
+    assert classify_entry_label(5, 5, min_n=10) == "neutral"
+    assert classify_entry_label(5, 4, min_n=10) == "observing"
+
+    cfg.learning.pattern_min_occurrences = 10
+    cfg.learning.win_confidence_boost = 8.0
+    cfg.learning.loss_confidence_penalty = 15.0
+    le = LearningEngine(cfg.learning, tmp_db)
+    for _ in range(6):
+        pos = _closed_pos(pnl=0.5, regime="ranging", exit_reason="take_profit")
+        pos.gross_pnl = 0.6
+        pos.id = tmp_db.insert_trade(pos)
+        le.on_trade_closed(pos)
+    for _ in range(4):
+        pos = _closed_pos(pnl=-0.4, regime="ranging", exit_reason="stop_loss")
+        pos.gross_pnl = -0.3
+        pos.id = tmp_db.insert_trade(pos)
+        le.on_trade_closed(pos)
+
+    win_row = tmp_db.get_pattern("rsi_zone=lt30", "win")
+    loss_row = tmp_db.get_pattern("rsi_zone=lt30", "loss")
+    assert win_row is not None and int(win_row["count"]) == 6
+    assert loss_row is not None and int(loss_row["count"]) == 4
+    assert win_row["status"] == "confirmed"
+    assert win_row["effect_action"] == "confidence_boost"
+    assert loss_row["status"] == "observing"
+    assert loss_row["effect_action"] == "inactive_xor"
+
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=50,
+        reason="test",
+        regime=MarketRegime.RANGING,
+        features={
+            "rsi": 28.0,
+            "rsi_prev": 32.0,
+            "close": 100.0,
+            "bb_lower": 99.0,
+            "bb_mid": 100.5,
+            "bb_upper": 102.0,
+            "bb_width": 0.03,
+            "macd_fast_hist": 0.02,
+            "macd_fast_hist_prev": -0.01,
+            "macd_slow_hist": 0.01,
+            "rejection_bull": True,
+            "htf_bias": "bear",
+            "ltf_turn": "turn_down",
+            "backing": "rsi,macd,rejection",
+            "edge_bps": 20.0,
+            "round_trip_cost_bps": 4.0,
+            "edge_ratio": 5.0,
+        },
+        timestamp=datetime.now(timezone.utc),
+    )
+    adjusted, reject = le.apply_confidence_effects(sig)
+    assert reject is None
+    assert float(adjusted.features.get("pattern_boost") or 0) >= 8.0
+    # Same-key XOR: no penalty from rsi_zone while it is a winner
+    assert float(adjusted.features.get("pattern_penalty") or 0) == 0.0
+
+
+def test_entry_wr_neutral_no_effects(cfg, tmp_db):
+    cfg.learning.pattern_min_occurrences = 10
+    le = LearningEngine(cfg.learning, tmp_db)
+    for _ in range(5):
+        pos = _closed_pos(pnl=0.4, regime="ranging", exit_reason="take_profit")
+        pos.gross_pnl = 0.5
+        pos.id = tmp_db.insert_trade(pos)
+        le.on_trade_closed(pos)
+    for _ in range(5):
+        pos = _closed_pos(pnl=-0.4, regime="ranging", exit_reason="stop_loss")
+        pos.gross_pnl = -0.3
+        pos.id = tmp_db.insert_trade(pos)
+        le.on_trade_closed(pos)
+
+    win_row = tmp_db.get_pattern("rsi_zone=lt30", "win")
+    loss_row = tmp_db.get_pattern("rsi_zone=lt30", "loss")
+    assert win_row["effect_action"] == "neutral"
+    assert loss_row["effect_action"] == "neutral"
+    assert win_row["status"] == "observing"
+    assert loss_row["status"] == "observing"
+
+    sig = Signal(
+        symbol="BTC/USDT",
+        venue=Venue.CRYPTO,
+        side=Side.CALL,
+        strategy="bb_mean_reversion",
+        confidence=50,
+        reason="test",
+        features={
+            "rsi": 28.0,
+            "rsi_prev": 32.0,
+            "close": 100.0,
+            "bb_lower": 99.0,
+            "bb_mid": 100.5,
+            "bb_upper": 102.0,
+            "bb_width": 0.03,
+            "macd_fast_hist": 0.02,
+            "macd_fast_hist_prev": -0.01,
+            "macd_slow_hist": 0.01,
+            "rejection_bull": True,
+            "htf_bias": "bear",
+            "ltf_turn": "turn_down",
+            "backing": "rsi,macd,rejection",
+            "edge_bps": 20.0,
+            "round_trip_cost_bps": 4.0,
+            "edge_ratio": 5.0,
+        },
+        timestamp=datetime.now(timezone.utc),
+    )
+    adjusted, reject = le.apply_confidence_effects(sig)
+    assert reject is None
+    assert float(adjusted.features.get("pattern_boost") or 0) == 0.0
+    assert float(adjusted.features.get("pattern_penalty") or 0) == 0.0
 
 
 def test_entry_edge_hard_and_soft():

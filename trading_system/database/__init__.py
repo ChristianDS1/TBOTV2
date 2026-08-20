@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS pattern_evidence (
     confirmed_count INTEGER,
     decision_reason TEXT,
     effect_action TEXT,
+    sum_pnl REAL DEFAULT 0,
     PRIMARY KEY (pattern_key, direction)
 );
 
@@ -160,6 +161,7 @@ class Database:
             "confirmed_count": "INTEGER",
             "decision_reason": "TEXT",
             "effect_action": "TEXT",
+            "sum_pnl": "REAL DEFAULT 0",
         }
         with self.connection() as conn:
             cols = {
@@ -416,8 +418,14 @@ class Database:
         return row["value"] if row else default
 
     def increment_pattern(
-        self, pattern_key: str, direction: str, now_iso: str
+        self,
+        pattern_key: str,
+        direction: str,
+        now_iso: str,
+        *,
+        pnl_delta: float | None = None,
     ) -> dict[str, Any]:
+        delta = float(pnl_delta) if pnl_delta is not None else 0.0
         with self.connection() as conn:
             row = conn.execute(
                 "SELECT * FROM pattern_evidence WHERE pattern_key=? AND direction=?",
@@ -426,36 +434,96 @@ class Database:
             if row is None:
                 conn.execute(
                     """
-                    INSERT INTO pattern_evidence (pattern_key, direction, count, last_seen, status)
-                    VALUES (?, ?, 1, ?, 'observing')
+                    INSERT INTO pattern_evidence
+                        (pattern_key, direction, count, last_seen, status, sum_pnl)
+                    VALUES (?, ?, 1, ?, 'observing', ?)
                     """,
-                    (pattern_key, direction, now_iso),
+                    (pattern_key, direction, now_iso, delta),
                 )
                 return {
                     "pattern_key": pattern_key,
                     "direction": direction,
                     "count": 1,
                     "status": "observing",
+                    "sum_pnl": delta,
                     "just_confirmed": False,
                 }
             new_count = int(row["count"]) + 1
+            keys = set(row.keys())
+            prev_sum = float(row["sum_pnl"] or 0) if "sum_pnl" in keys else 0.0
+            new_sum = prev_sum + delta
             status = row["status"]
-            just_confirmed = False
             conn.execute(
                 """
                 UPDATE pattern_evidence
-                SET count=?, last_seen=?
+                SET count=?, last_seen=?, sum_pnl=?
                 WHERE pattern_key=? AND direction=?
                 """,
-                (new_count, now_iso, pattern_key, direction),
+                (new_count, now_iso, new_sum, pattern_key, direction),
             )
             return {
                 "pattern_key": pattern_key,
                 "direction": direction,
                 "count": new_count,
                 "status": status,
-                "just_confirmed": just_confirmed,
+                "sum_pnl": new_sum,
+                "just_confirmed": False,
             }
+
+    def get_pattern(
+        self, pattern_key: str, direction: str
+    ) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM pattern_evidence WHERE pattern_key=? AND direction=?",
+                (pattern_key, direction),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_pattern_effect(
+        self,
+        pattern_key: str,
+        direction: str,
+        *,
+        status: str,
+        effect_action: str,
+        decision_reason: str,
+        confirmed_count: int | None = None,
+    ) -> None:
+        """Set status/effect for a pattern row (confirm, neutralize, demote)."""
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT count FROM pattern_evidence WHERE pattern_key=? AND direction=?",
+                (pattern_key, direction),
+            ).fetchone()
+            if row is None:
+                return
+            count = int(confirmed_count if confirmed_count is not None else row["count"])
+            confirmed_at = (
+                datetime.now(timezone.utc).isoformat()
+                if status == "confirmed"
+                else None
+            )
+            conn.execute(
+                """
+                UPDATE pattern_evidence
+                SET status=?,
+                    effect_action=?,
+                    decision_reason=?,
+                    confirmed_count=?,
+                    confirmed_at=?
+                WHERE pattern_key=? AND direction=?
+                """,
+                (
+                    status,
+                    effect_action,
+                    decision_reason,
+                    count if status == "confirmed" else None,
+                    confirmed_at,
+                    pattern_key,
+                    direction,
+                ),
+            )
 
     def upsert_pattern_count(
         self,

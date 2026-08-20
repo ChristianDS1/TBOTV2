@@ -16,6 +16,7 @@ from trading_system.learning.keys import (
 logger = logging.getLogger(__name__)
 
 POLICY_V3_FLAG = "pattern_keys_policy_v3_no_single_hard_reject"
+POLICY_V4_FLAG = "pattern_keys_policy_v4_limbo_wr_exclusive"
 
 
 def is_hard_reject_forbidden_key(key: str) -> bool:
@@ -111,6 +112,33 @@ def ensure_no_single_hard_reject_policy(db: Database) -> dict[str, Any] | None:
         f"Neutralized hard_reject bans (esp. 1-dim defaults): demoted={summary['demoted']}",
         summary,
     )
+    return summary
+
+
+def ensure_limbo_wr_exclusive_policy(
+    db: Database, cfg: Any
+) -> dict[str, Any] | None:
+    """
+    One-shot: wipe pattern_evidence + applied_changes and replay all closed trades
+    with limbo/cost ENTRY skip + exclusive WR labeling. Trades table untouched.
+    """
+    if db.get_state(POLICY_V4_FLAG):
+        return None
+    from trading_system.learning.rebuild import rebuild_patterns
+
+    summary = rebuild_patterns(db, cfg, quiet=True)
+    summary["policy"] = POLICY_V4_FLAG
+    db.set_state(POLICY_V4_FLAG, "1")
+    db.insert_insight(
+        "pattern_keys_policy_v4",
+        (
+            f"Reclassified ENTRY evidence: limbo/cost skip + WR-exclusive labels "
+            f"(closed={summary.get('closed_trades')}, "
+            f"win={summary.get('patterns_win')}, loss={summary.get('patterns_loss')})"
+        ),
+        summary,
+    )
+    logger.info("ensure_limbo_wr_exclusive_policy: %s", summary)
     return summary
 
 

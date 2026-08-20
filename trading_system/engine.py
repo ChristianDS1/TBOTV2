@@ -54,11 +54,13 @@ class TradingEngine:
         try:
             from trading_system.learning.sanitize import ensure_pattern_keys_policy
             from trading_system.learning.governor import (
+                ensure_limbo_wr_exclusive_policy,
                 ensure_no_single_hard_reject_policy,
             )
 
             ensure_pattern_keys_policy(self.db)
             ensure_no_single_hard_reject_policy(self.db)
+            ensure_limbo_wr_exclusive_policy(self.db, self.cfg.learning)
         except Exception as e:
             logger.warning("pattern keys sanitize/governor skipped: %s", e)
         self.model = WinProbabilityModel(ROOT / "models" / "artifacts")

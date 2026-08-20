@@ -38,6 +38,13 @@ def main(argv: list[str] | None = None) -> None:
         "rebuild-patterns",
         help="Backfill gross/cost_erosion on closed trades and rebuild pattern evidence",
     )
+    sub.add_parser(
+        "reclassify-pattern-effects",
+        help=(
+            "Alias of rebuild-patterns: wipe ENTRY evidence and replay all closed trades "
+            "(limbo/cost skip ENTRY; exclusive WR winner/loser). Does NOT delete trades."
+        ),
+    )
 
     purge = sub.add_parser(
         "purge-trades",
@@ -162,12 +169,15 @@ def main(argv: list[str] | None = None) -> None:
         path = engine.force_daily_report(args.day)
         print(path)
 
-    elif args.cmd == "rebuild-patterns":
+    elif args.cmd in ("rebuild-patterns", "reclassify-pattern-effects"):
         from trading_system.database import Database
+        from trading_system.learning.governor import POLICY_V4_FLAG
         from trading_system.learning.rebuild import rebuild_patterns
 
         db = Database(cfg.db_path())
         summary = rebuild_patterns(db, cfg.learning, quiet=True)
+        db.set_state(POLICY_V4_FLAG, "1")
+        summary["policy_flag"] = POLICY_V4_FLAG
         print(summary)
 
     elif args.cmd == "purge-trades":

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.31
+
+- Learning hygiene v4: limbo_timeout / cost_erosion no longer train ENTRY win/loss
+- Exclusive WR labels per ENTRY key (winner XOR loser XOR neutral; never boost+penalty together)
+- Historical reclassify via rebuild / `reclassify-pattern-effects` + ensure-on-startup policy v4
+- No new entry filters; leverage 50x; no hard-reject on 1-dim defaults; no Fase 2 bandit
+
 ## 0.1.30
 
 - Windows launchers only: `scripts/start_tbot*` + `start_tbot_loop*` (log, browser, 72h restart)
@@ -17,6 +24,7 @@
 - Learning keys policy v2: allowlisted ENTRY/EXIT buckets only (no session/symbol/chart/strategy effect keys)
 - Confirmed ENTRY losses hard-reject; confirm threshold 10; sanitize wipe on deploy
 - hist15 seed priority-file only (no pattern_evidence chart poison)
+
 
 ## 0.1.27
 

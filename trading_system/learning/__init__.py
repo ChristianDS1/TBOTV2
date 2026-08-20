@@ -13,12 +13,14 @@ from trading_system.config import LearningConfig
 from trading_system.database import Database
 from trading_system.learning.keys import (
     HARD_REJECT_FORBIDDEN_KEYS,
+    classify_entry_label,
     entry_keys_from_features,
     exit_keys_from_features,
     hold_minutes_from_position,
     is_entry_compound,
     is_entry_key,
     is_exit_key,
+    is_limbo_exit,
     is_uneconomic,
     pattern_keys_from_trade,
     signal_pattern_keys,
@@ -30,9 +32,11 @@ from trading_system.types import Position, Signal
 __all__ = [
     "LearningEngine",
     "StrategyRanker",
+    "classify_entry_label",
     "classify_strategy_outcome",
     "confidence_bucket",
     "daily_objective_progress",
+    "is_limbo_exit",
     "learning_display",
     "pattern_keys_from_trade",
     "signal_pattern_keys",
@@ -320,8 +324,27 @@ class LearningEngine:
                     }
                 )
 
-        # ENTRY track — skip win/loss when uneconomic (cost track only)
-        if not uneconomic:
+        # ENTRY track — skip limbo (flat timeout), cost_erosion, and uneconomic
+        # Limbo/cost must not confirm or boost/penalty ENTRY setups.
+        skip_entry = bool(uneconomic or cost_erosion or is_limbo_exit(pos.exit_reason))
+        if skip_entry:
+            why = (
+                "limbo"
+                if is_limbo_exit(pos.exit_reason)
+                else ("cost_erosion" if cost_erosion else "uneconomic")
+            )
+            self.db.insert_insight(
+                "entry_skip",
+                f"ENTRY evidence skipped ({why}) for {pos.symbol} exit={pos.exit_reason}",
+                {
+                    "trade_id": pos.id,
+                    "reason": why,
+                    "exit_reason": pos.exit_reason,
+                    "net_pnl": pos.pnl,
+                },
+            )
+        else:
+            net = float(pos.pnl) if pos.pnl is not None else 0.0
             for key in entry_keys_from_features(
                 feats, pos.side, edge_multiple=self.edge_multiple
             ):
@@ -332,11 +355,12 @@ class LearningEngine:
                     threshold=threshold,
                     sess=sess,
                     track="entry",
+                    pnl_delta=net,
                 )
                 if newly:
                     newly_confirmed.append(newly)
 
-        # EXIT track — diagnostics only (never bans entries)
+        # EXIT track — diagnostics only (never bans entries); limbo still trains EXIT
         for key in exit_keys_from_features(feats, hold_minutes_from_position(pos)):
             newly = self._increment_and_maybe_confirm(
                 key,
@@ -409,19 +433,26 @@ class LearningEngine:
         threshold: int,
         sess: str,
         track: str,
+        pnl_delta: float | None = None,
     ) -> dict[str, Any] | None:
-        ev = self.db.increment_pattern(key, direction, now)
-        count = int(ev["count"])
-        status = ev["status"]
+        self.db.increment_pattern(key, direction, now, pnl_delta=pnl_delta)
+        if track == "entry" or is_entry_key(key):
+            return self._reconcile_entry_key_effects(
+                key, now=now, threshold=threshold, sess=sess
+            )
+        # EXIT: confirm per-direction at threshold (insight only)
+        ev = self.db.get_pattern(key, direction) or {}
+        count = int(ev.get("count") or 0)
+        status = ev.get("status") or "observing"
         if count < threshold or status == "confirmed":
             return None
 
         action_info = self._apply_confirmed_effect(
-            key, direction, occurrences=count, threshold=threshold, track=track
+            key, direction, occurrences=count, threshold=threshold, track="exit"
         )
         decision_reason = (
-            f"ACEPTADO como patrón {direction} ({track}): la key '{key}' se repitió "
-            f"{count} veces (≥ umbral {threshold}). "
+            f"ACEPTADO como patrón {direction} (exit): la key '{key}' se repitió "
+            f"{count} veces (>= umbral {threshold}). "
             f"Efecto aplicado: {action_info['action']}."
         )
         self.db.confirm_pattern(
@@ -440,7 +471,7 @@ class LearningEngine:
                 "count": count,
                 "threshold": threshold,
                 "action": action_info["action"],
-                "track": track,
+                "track": "exit",
                 "session": sess,
             },
         )
@@ -451,6 +482,221 @@ class LearningEngine:
             "decision_reason": decision_reason,
             **action_info,
         }
+
+    def _entry_counts(self, key: str) -> tuple[int, int, float | None]:
+        """wins, losses, mean_net (from sum_pnl if available)."""
+        win_row = self.db.get_pattern(key, "win")
+        loss_row = self.db.get_pattern(key, "loss")
+        wins = int(win_row["count"]) if win_row else 0
+        losses = int(loss_row["count"]) if loss_row else 0
+        total_pnl = 0.0
+        n_pnl = 0
+        for row in (win_row, loss_row):
+            if not row:
+                continue
+            if "sum_pnl" in row and row["sum_pnl"] is not None:
+                total_pnl += float(row["sum_pnl"])
+                n_pnl += int(row["count"] or 0)
+        mean_net: float | None = None
+        if n_pnl > 0:
+            mean_net = total_pnl / n_pnl
+        return wins, losses, mean_net
+
+    def _reconcile_entry_key_effects(
+        self,
+        key: str,
+        *,
+        now: str,
+        threshold: int,
+        sess: str,
+    ) -> dict[str, Any] | None:
+        """
+        Exclusive WR label for one ENTRY key:
+        observing / winner / loser / neutral — never boost AND penalty.
+        """
+        del now
+        wins, losses, mean_net = self._entry_counts(key)
+        n = wins + losses
+        label = classify_entry_label(
+            wins, losses, min_n=threshold, mean_net=mean_net
+        )
+        win_row = self.db.get_pattern(key, "win")
+        loss_row = self.db.get_pattern(key, "loss")
+        prev_win_action = (win_row or {}).get("effect_action") or ""
+        prev_loss_action = (loss_row or {}).get("effect_action") or ""
+        prev_label = "observing"
+        if (
+            (win_row or {}).get("status") == "confirmed"
+            and prev_win_action == "confidence_boost"
+        ):
+            prev_label = "winner"
+        elif (loss_row or {}).get("status") == "confirmed" and prev_loss_action in (
+            "confidence_penalty",
+            "soft_reject",
+            "hard_reject",
+        ):
+            prev_label = "loser"
+        elif prev_win_action == "neutral" or prev_loss_action == "neutral":
+            if n >= threshold:
+                prev_label = "neutral"
+
+        if label == prev_label and label != "observing":
+            if label == "winner" and (win_row or {}).get("status") == "confirmed":
+                return None
+            if label == "loser" and (loss_row or {}).get("status") == "confirmed":
+                return None
+            if label == "neutral":
+                return None
+
+        if label == "observing":
+            return None
+
+        wr = wins / n if n else 0.0
+        newly: dict[str, Any] | None = None
+
+        if label == "winner":
+            action_info = self._apply_confirmed_effect(
+                key, "win", occurrences=n, threshold=threshold, track="entry"
+            )
+            mean_bit = (
+                f" mean_net={mean_net:.4f}" if mean_net is not None else ""
+            )
+            reason = (
+                f"ACEPTADO ENTRY winner (WR={wr:.0%} n={n}>={threshold}{mean_bit}): "
+                f"key '{key}' -> {action_info['action']} only (loss side inactive)."
+            )
+            self.db.set_pattern_effect(
+                key,
+                "win",
+                status="confirmed",
+                effect_action=action_info["action"],
+                decision_reason=reason,
+                confirmed_count=wins,
+            )
+            if loss_row is not None:
+                self.db.set_pattern_effect(
+                    key,
+                    "loss",
+                    status="observing",
+                    effect_action="inactive_xor",
+                    decision_reason=(
+                        f"NEUTRALIZADO (winner XOR): loss side inactive while WR={wr:.0%}"
+                    ),
+                    confirmed_count=None,
+                )
+            newly = {
+                "pattern_key": key,
+                "direction": "win",
+                "count": wins,
+                "n": n,
+                "wr": wr,
+                "label": "winner",
+                "status": "confirmed",
+                **action_info,
+            }
+
+        elif label == "loser":
+            action_info = self._apply_confirmed_effect(
+                key, "loss", occurrences=n, threshold=threshold, track="entry"
+            )
+            reason = (
+                f"ACEPTADO ENTRY loser (WR={wr:.0%} n={n}>={threshold}): "
+                f"key '{key}' -> {action_info['action']} only (win side inactive)."
+            )
+            self.db.set_pattern_effect(
+                key,
+                "loss",
+                status="confirmed",
+                effect_action=action_info["action"],
+                decision_reason=reason,
+                confirmed_count=losses,
+            )
+            if win_row is not None:
+                self.db.set_pattern_effect(
+                    key,
+                    "win",
+                    status="observing",
+                    effect_action="inactive_xor",
+                    decision_reason=(
+                        f"NEUTRALIZADO (loser XOR): win side inactive while WR={wr:.0%}"
+                    ),
+                    confirmed_count=None,
+                )
+            newly = {
+                "pattern_key": key,
+                "direction": "loss",
+                "count": losses,
+                "n": n,
+                "wr": wr,
+                "label": "loser",
+                "status": "confirmed",
+                **action_info,
+            }
+
+        else:
+            reason = (
+                f"NEUTRO ENTRY (WR={wr:.0%} n={n}>={threshold}): key '{key}' - "
+                f"ni boost ni penalty (banda 45-55%)."
+            )
+            if win_row is not None:
+                self.db.set_pattern_effect(
+                    key,
+                    "win",
+                    status="observing",
+                    effect_action="neutral",
+                    decision_reason=reason,
+                    confirmed_count=None,
+                )
+            if loss_row is not None:
+                self.db.set_pattern_effect(
+                    key,
+                    "loss",
+                    status="observing",
+                    effect_action="neutral",
+                    decision_reason=reason,
+                    confirmed_count=None,
+                )
+            self.db.insert_applied_change(
+                key,
+                "neutral",
+                "neutral",
+                reason,
+                occurrences=n,
+                threshold=threshold,
+            )
+            newly = {
+                "pattern_key": key,
+                "direction": "neutral",
+                "count": n,
+                "n": n,
+                "wr": wr,
+                "label": "neutral",
+                "status": "observing",
+                "action": "neutral",
+            }
+
+        insight_msg = (
+            f"ENTRY {label}: '{key}' WR={wr:.0%} n={n} -> "
+            f"{(newly or {}).get('action')}"
+        )
+        self.db.insert_insight(
+            "confirmed_pattern",
+            insight_msg,
+            {
+                "pattern_key": key,
+                "label": label,
+                "wins": wins,
+                "losses": losses,
+                "n": n,
+                "wr": wr,
+                "mean_net": mean_net,
+                "threshold": threshold,
+                "action": (newly or {}).get("action"),
+                "track": "entry",
+                "session": sess,
+            },
+        )
+        return newly
 
     def _loss_effect_action(self, pattern_key: str) -> str:
         """
@@ -527,9 +773,8 @@ class LearningEngine:
 
     def apply_confidence_effects(self, signal: Signal) -> tuple[Signal, str | None]:
         """
-        ENTRY keys: confirmed win → boost (compounds higher);
-        confirmed loss → penalty / soft-reject (explore bypass) / rare hard-reject.
-        Never hard-reject 1-dim defaults. EXIT keys ignored.
+        ENTRY keys: exclusive WR label per key (winner XOR loser XOR neutral).
+        Never apply boost and penalty for the same key. EXIT keys ignored.
         """
         keys = set(
             signal_pattern_keys(
@@ -540,26 +785,13 @@ class LearningEngine:
             sess = self.current_session(signal.timestamp)
             signal.features["session"] = sess
 
-        win_rows = [
-            p
-            for p in self.db.get_patterns(direction="win", status="confirmed")
-            if is_entry_key(p["pattern_key"])
-        ]
-        loss_rows = [
-            p
-            for p in self.db.get_patterns(direction="loss", status="confirmed")
-            if is_entry_key(p["pattern_key"])
-        ]
-        confirmed_wins = {p["pattern_key"]: p for p in win_rows}
-        confirmed_losses = {p["pattern_key"]: p for p in loss_rows}
-
+        threshold = int(self.cfg.pattern_min_occurrences)
         boost = 0.0
         penalty = 0.0
         reject_reason: str | None = None
         exploring = bool(getattr(signal, "exploration", False)) or (
             self.cfg.phase == "discovery"
         )
-        # Tag exploration early for soft-reject bypass (north-star: don't idle)
         if self.cfg.phase == "discovery":
             exploring = True
 
@@ -568,22 +800,35 @@ class LearningEngine:
             or self.cfg.win_confidence_boost
         )
 
+        from trading_system.learning.governor import is_hard_reject_forbidden_key
+
         for k in keys:
-            if k in confirmed_wins:
+            if not is_entry_key(k):
+                continue
+            wins, losses, mean_net = self._entry_counts(k)
+            label = classify_entry_label(
+                wins, losses, min_n=threshold, mean_net=mean_net
+            )
+            signal.features[f"entry_label:{k}"] = label
+
+            if label == "winner":
                 if is_entry_compound(k):
                     boost = max(boost, win_compound_boost)
                     signal.features["win_compound_match"] = k
                 else:
                     boost = max(boost, self.cfg.win_confidence_boost)
-            if k not in confirmed_losses:
                 continue
-            row = confirmed_losses[k]
-            action = (row.get("effect_action") or "").strip() or self._loss_effect_action(
-                k
-            )
-            # Legacy hard_reject on forbidden/singles → treat as penalty only
-            from trading_system.learning.governor import is_hard_reject_forbidden_key
 
+            if label != "loser":
+                continue
+
+            loss_row = self.db.get_pattern(k, "loss") or {}
+            action = (
+                (loss_row.get("effect_action") or "").strip()
+                or self._loss_effect_action(k)
+            )
+            if action in ("inactive_xor", "neutral", "confidence_boost"):
+                action = self._loss_effect_action(k)
             if action == "hard_reject" and is_hard_reject_forbidden_key(k):
                 action = "confidence_penalty"
             if action == "confidence_penalty":
@@ -595,14 +840,12 @@ class LearningEngine:
                     break
                 signal.features["soft_reject_bypassed"] = k
             elif action == "hard_reject":
-                # Rare compounds only; still bypass in discovery to protect fill rate
                 if exploring and not bool(
                     getattr(self.cfg, "compound_loss_hard_reject", False)
                 ):
                     penalty = max(penalty, self.cfg.loss_confidence_penalty)
                     signal.features["hard_reject_bypassed"] = k
                 elif exploring and self.cfg.phase == "discovery":
-                    # Discovery never permanently freezes via learning bans
                     penalty = max(penalty, self.cfg.loss_confidence_penalty)
                     signal.features["hard_reject_bypassed"] = k
                 else:

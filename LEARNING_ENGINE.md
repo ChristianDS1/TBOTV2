@@ -20,7 +20,24 @@ Learning **never** increments or applies confidence effects on:
 
 Bucket dims: `rsi_zone`, `rsi_slope`, `rsi_vs_side`, `bb_pos`, `bb_width_bin`, `macd_*`, `rejection`, `htf_ltf_combo`, `backing_quality`, `edge_ratio_bin`, plus compounds `rsi_zone|bb_pos`, `rsi_vs_side|macd_fast_vs_slow`.
 
-Uneconomic edge: **no ENTRY win/loss count** (cost / EXIT only).
+**Does NOT train ENTRY win/loss when:**
+
+- `exit_reason` is limbo (`limbo_timeout` / flat timeout equivalents) — EXIT/cost insights still allowed
+- `cost_erosion` (strategy OK / TP but net ≤ 0 by fees) — cost track only; never inflate ENTRY wins
+- uneconomic edge at entry
+
+### Exclusive WR labels (policy v4)
+
+For each ENTRY key, `n = wins + losses`:
+
+| Condition | Label | Effect |
+|---|---|---|
+| `n < pattern_min_occurrences` (10) | observing | none |
+| `wr ≥ 0.55` and mean net > 0 (when known) | **winner** | `confidence_boost` only (compounds → `win_compound_boost`) |
+| `wr ≤ 0.45` | **loser** | `confidence_penalty` (1-dim) or `soft_reject` (compounds); win side inactive |
+| `0.45 < wr < 0.55` | **neutral** | neither boost nor penalty |
+
+`apply_confidence_effects` is **XOR per key** — never boost + penalty on the same key. No Fase 2 equity-reward/bandit.
 
 ### Loss effects (anti-lockup)
 
@@ -29,8 +46,6 @@ Uneconomic edge: **no ENTRY win/loss count** (cost / EXIT only).
 | Ultra-common / 1-dim (e.g. `rejection=none`, `macd_cross=none`, `rsi_vs_side=counter`, `bb_width_bin=squeeze`) | **confidence_penalty only** — never `hard_reject` |
 | Compounds | `soft_reject` with **exploration bypass** (default); optional `hard_reject` only if `compound_loss_hard_reject: true` |
 | Discovery phase | Learning bans do not freeze fill rate |
-
-Confirmed **WIN compounds** get higher boost (`win_compound_boost`) and entry preference — path toward consistent gains.
 
 ### EXIT track / cost_erosion
 
@@ -44,13 +59,20 @@ If **fills in last ~45m == 0** and recent rejects are dominated by `confirmed_lo
 
 `trade_rate≈0` + mass hard-reject = policy failure; bans revert automatically.
 
-## Deploy cleanup
+## Deploy cleanup / historical reclassify
 
 - `pattern_keys_policy_v2`: wipe non-allowlist evidence.
 - `pattern_keys_policy_v3_no_single_hard_reject`: neutralize blocking hard_rejects (esp. 1-dim defaults).
-- Trades history kept.
+- `pattern_keys_policy_v4_limbo_wr_exclusive`: one-shot rebuild of `pattern_evidence` + `applied_changes` from all closed trades (limbo/cost skip ENTRY; WR-exclusive labels). **Trades table kept.**
+- On engine start: ensure v2 → v3 → v4 (idempotent flags).
 
-CLI: `python -m trading_system sanitize-pattern-keys --yes`
+CLI:
+
+```text
+python -m trading_system rebuild-patterns
+python -m trading_system reclassify-pattern-effects   # alias; same rebuild + sets v4 flag
+python -m trading_system sanitize-pattern-keys --yes
+```
 
 ## Session display
 

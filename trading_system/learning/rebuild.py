@@ -54,8 +54,9 @@ def rebuild_patterns(
 ) -> dict[str, Any]:
     """
     1) Backfill gross_pnl / cost_erosion on all closed trades
-    2) Wipe pattern_evidence + applied_changes
+    2) Wipe pattern_evidence + applied_changes (NOT trades)
     3) Re-run learning classification in trade order
+       (limbo/cost_erosion skip ENTRY; exclusive WR labels)
     """
     closed = db.get_all_closed()
     # get_all_closed is ORDER BY id — good
@@ -102,7 +103,8 @@ def rebuild_patterns(
     db.insert_insight(
         "rebuild",
         (
-            f"Rebuilt patterns from {updated} closed trades. "
+            f"Rebuilt patterns from {updated} closed trades "
+            f"(limbo/cost skip ENTRY; WR-exclusive labels). "
             f"take_profit with net<=0 reclassified as strategy win + cost_erosion: {tp_net_neg}. "
             f"Confirmation events during rebuild: {confirmed_events}."
         ),
@@ -110,6 +112,7 @@ def rebuild_patterns(
             "closed_trades": updated,
             "tp_net_negative": tp_net_neg,
             "confirmation_events": confirmed_events,
+            "policy": "v4_limbo_wr_exclusive",
         },
     )
 
