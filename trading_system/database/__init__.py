@@ -470,6 +470,34 @@ class Database:
                 "just_confirmed": False,
             }
 
+    def bulk_upsert_pattern_counts(
+        self,
+        rows: list[tuple[str, str, int, float, str]],
+    ) -> None:
+        """
+        Bulk write pattern evidence counts.
+        Each row: (pattern_key, direction, count, sum_pnl, now_iso).
+        """
+        if not rows:
+            return
+        with self.connection() as conn:
+            conn.executemany(
+                """
+                INSERT INTO pattern_evidence
+                    (pattern_key, direction, count, last_seen, status, sum_pnl)
+                VALUES (?, ?, ?, ?, 'observing', ?)
+                ON CONFLICT(pattern_key, direction) DO UPDATE SET
+                    count=excluded.count,
+                    last_seen=excluded.last_seen,
+                    sum_pnl=excluded.sum_pnl,
+                    status='observing'
+                """,
+                [
+                    (key, direction, int(count), now_iso, float(sum_pnl))
+                    for key, direction, count, sum_pnl, now_iso in rows
+                ],
+            )
+
     def get_pattern(
         self, pattern_key: str, direction: str
     ) -> dict[str, Any] | None:

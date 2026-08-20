@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.32
+
+- Fix v4 rebuild hang: skip per-trade full-history ranker/priority during replay (O(n) not O(n²))
+
 ## 0.1.31
 
 - Learning hygiene v4: limbo_timeout / cost_erosion no longer train ENTRY win/loss
